@@ -1,0 +1,22 @@
+[project]
+name = "powm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dreamerv3",
+    "gymnasium>=0.29",
+    "matplotlib>=3.9.2",
+    "opencv-python>=4.10.0.84",
+]
+
+[tool.uv.sources]
+dreamerv3 = { path = "third_party/dreamerv3", editable = true }
+
+[project.scripts]
+train-dreamer = "powm.algorithms.train_dreamer:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
