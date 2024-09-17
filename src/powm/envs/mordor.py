@@ -36,6 +36,7 @@ class MordorHike(gym.Env):
         estimate_belief=False,
         num_particles=1000,
         effective_particle_threshold=0.5,
+        render_size=(600, 800),
     ):
         self.dimensions = 2
         self.occluded_dims = list(occlude_dims)
@@ -59,6 +60,7 @@ class MordorHike(gym.Env):
 
         # misc
         self.render_mode = render_mode
+        self.render_size = render_size
 
         self._setup_landscape()
 
@@ -295,94 +297,110 @@ class MordorHike(gym.Env):
         if self.render_mode is None:
             return
 
-        fig, ax = plt.subplots(figsize=(10, 8))
+        # Create or get cached background
+        if not hasattr(self, "background"):
+            self.background = self._create_background()
 
-        x = y = np.linspace(self.lower_bound[0], self.upper_bound[0], 100)
-        X, Y = np.meshgrid(x, y)
-        positions = np.stack([X, Y], axis=-1)
-        Z = self._altitude(positions.reshape(-1, 2)).reshape(X.shape)
+        # Create a copy of the background to draw on
+        img = self.background.copy()
 
-        contour = ax.contour(X, Y, Z, levels=20, cmap="viridis")
-        ax.clabel(contour, inline=True, fontsize=8)
+        # Draw path
+        path = np.array(self.path, dtype=np.int32)
+        cv2.polylines(img, [path], False, (0, 0, 255), 2)
 
-        path = np.array(self.path)
-        ax.plot(path[:, 0], path[:, 1], "r-", linewidth=2, label="Path")
+        # Draw start and goal
+        start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
+        goal = tuple(map(int, self._world_to_pixel(self.goal_position)))
+        cv2.circle(img, start, 5, (0, 255, 0), -1)
+        cv2.circle(img, goal, 5, (255, 0, 0), -1)
 
-        ax.scatter(
-            self.fixed_start_pos[0],
-            self.fixed_start_pos[1],
-            c="g",
-            s=100,
-            label="Start",
+        # Draw particles
+        for particle, weight in zip(self.particles, self.particle_weights):
+            pos = tuple(map(int, self._world_to_pixel(particle[:2])))
+            size = int(5 + 45 * weight)
+            cv2.circle(img, pos, size, (0, 165, 255), 1)
+            direction = (int(10 * np.cos(particle[2])), int(-10 * np.sin(particle[2])))
+            cv2.line(
+                img,
+                pos,
+                (pos[0] + direction[0], pos[1] + direction[1]),
+                (0, 165, 255),
+                1,
+            )
+
+        # Draw actual position and direction
+        pos = tuple(map(int, self._world_to_pixel(self.state[:2])))
+        cv2.circle(img, pos, 7, (0, 0, 255), -1)
+        direction = (int(15 * np.cos(self.state[2])), int(-15 * np.sin(self.state[2])))
+        cv2.line(
+            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), 2
         )
-        ax.scatter(
-            self.goal_position[0], self.goal_position[1], c="b", s=100, label="Goal"
-        )
-
-        # Render particles with directions and weighted sizes
-        particle_sizes = (
-            20 + 180 * self.particle_weights
-        )  # Scale sizes based on weights
-        scatter = ax.scatter(
-            self.particles[:, 0],
-            self.particles[:, 1],
-            c="orange",
-            s=particle_sizes,
-            alpha=0.6,
-            label="Particles",
-        )
-
-        # Add particle directions
-        ax.quiver(
-            self.particles[:, 0],
-            self.particles[:, 1],
-            np.cos(self.particles[:, 2]),
-            np.sin(self.particles[:, 2]),
-            color="orange",
-            alpha=0.6,
-            scale=15,
-            width=0.003,
-        )
-
-        # Render actual position and direction on top of particles
-        ax.scatter(
-            self.state[0],
-            self.state[1],
-            c="red",
-            s=150,
-            alpha=1.0,
-            label="Actual Position",
-            zorder=10,
-        )
-        ax.quiver(
-            self.state[0],
-            self.state[1],
-            np.cos(self.state[2]),
-            np.sin(self.state[2]),
-            color="red",
-            scale=10,
-            zorder=11,
-        )
-
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.legend()
-        plt.title("Mordor Hike")
-        plt.colorbar(contour, label="Altitude")
-
-        fig.canvas.draw()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        plt.close(fig)
 
         if self.render_mode == "rgb_array":
             return img
         elif self.render_mode == "human":
             if self.window is None:
                 cv2.namedWindow("Mordor Hike", cv2.WINDOW_NORMAL)
-                cv2.resizeWindow("Mordor Hike", 800, 600)
-            cv2.imshow("Mordor Hike", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+                cv2.resizeWindow(
+                    "Mordor Hike", self.render_size[1], self.render_size[0]
+                )
+            cv2.imshow("Mordor Hike", img)
             cv2.waitKey(1)
+
+    def _create_background(self):
+        x = y = np.linspace(
+            self.lower_bound[0], self.upper_bound[0], self.render_size[1]
+        )
+        X, Y = np.meshgrid(x, y)
+        positions = np.stack([X, Y], axis=-1)
+        Z = self._altitude(positions.reshape(-1, 2)).reshape(X.shape)
+
+        # Normalize Z to 0-255 range
+        Z_norm = ((Z - Z.min()) / (Z.max() - Z.min()) * 255).astype(np.uint8)
+
+        # Create color map
+        color_map = cv2.applyColorMap(Z_norm, cv2.COLORMAP_VIRIDIS)
+
+        # Draw contours
+        levels = np.linspace(Z.min(), Z.max(), 20)
+        for level in levels:
+            contours = cv2.findContours(
+                (Z >= level).astype(np.uint8),
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )[0]
+            for contour in contours:
+                # Add debug print to check contour shape and type
+                print(f"Contour shape: {contour.shape}, dtype: {contour.dtype}")
+
+                # Ensure contour is the correct type and shape
+                contour = np.array(contour, dtype=np.int32).reshape((-1, 1, 2))
+
+                contour = (
+                    contour.squeeze()
+                    * [
+                        self.render_size[1] / Z.shape[1],
+                        self.render_size[0] / Z.shape[0],
+                    ]
+                ).astype(np.int32)
+                cv2.polylines(
+                    color_map, contour.reshape(-1, 1, 2), False, (255, 255, 255), 1
+                )
+
+        return color_map
+
+    def _world_to_pixel(self, coord):
+        x = (
+            (coord[0] - self.lower_bound[0])
+            / (self.upper_bound[0] - self.lower_bound[0])
+            * self.render_size[1]
+        )
+        y = (
+            1
+            - (coord[1] - self.lower_bound[1])
+            / (self.upper_bound[1] - self.lower_bound[1])
+        ) * self.render_size[0]
+        return x, y
 
     def close(self):
         if self.window is not None:
@@ -394,7 +412,9 @@ def main():
     """
     Allows to play with the MordorHike environment using keyboard controls.
     """
-    env = MordorHike.easy(render_mode="human", estimate_belief=True)
+    env = MordorHike.easy(
+        render_mode="human", estimate_belief=True, render_size=(400, 400)
+    )
 
     obs, _ = env.reset()
     print(f"Initial observation: {obs}")
