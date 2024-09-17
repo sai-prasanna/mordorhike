@@ -36,7 +36,7 @@ class MordorHike(gym.Env):
         estimate_belief=False,
         num_particles=1000,
         effective_particle_threshold=0.5,
-        render_size=(600, 800),
+        render_size=(200, 200),
     ):
         self.dimensions = 2
         self.occluded_dims = list(occlude_dims)
@@ -68,8 +68,8 @@ class MordorHike(gym.Env):
         self.action_size = 4  # forward, backward, turn left, turn right
 
         self.observation_space = spaces.Box(
-            low=float("-inf"),
-            high=float("inf"),
+            low=-1.0,
+            high=1.0,
             shape=(self.observation_size,),
             dtype=np.float32,
         )
@@ -140,6 +140,9 @@ class MordorHike(gym.Env):
 
         # Occlude dimensions
         obs = np.delete(obs, self.occluded_dims, axis=-1)
+
+        # Clip observation to [-1, 1]
+        np.clip(obs, -1.0, 1.0, out=obs)
 
         return obs.astype(np.float32)
 
@@ -270,6 +273,7 @@ class MordorHike(gym.Env):
             scale=self.obs_std,
         ).prod(axis=-1)
 
+        # Update weights
         self.particle_weights *= likelihood
         self.particle_weights += (
             1e-300  # Add small constant to prevent division by zero
@@ -342,23 +346,20 @@ class MordorHike(gym.Env):
         )
 
         if self.render_mode == "rgb_array":
-            return img
+            return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         elif self.render_mode == "human":
             if self.window is None:
                 cv2.namedWindow("Mordor Hike", cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(
-                    "Mordor Hike", self.render_size[1], self.render_size[0]
-                )
             cv2.imshow("Mordor Hike", img)
             cv2.waitKey(1)
 
     def _create_background(self):
-        x = y = np.linspace(
-            self.lower_bound[0], self.upper_bound[0], self.render_size[1]
-        )
+        height, width = self.render_size
+        x = np.linspace(self.lower_bound[0], self.upper_bound[0], width)
+        y = np.linspace(self.lower_bound[1], self.upper_bound[1], height)
         X, Y = np.meshgrid(x, y)
         positions = np.stack([X, Y], axis=-1)
-        Z = self._altitude(positions.reshape(-1, 2)).reshape(X.shape)
+        Z = self._altitude(positions.reshape(-1, 2)).reshape(height, width)
 
         # Normalize Z to 0-255 range
         Z_norm = ((Z - Z.min()) / (Z.max() - Z.min()) * 255).astype(np.uint8)
@@ -367,30 +368,14 @@ class MordorHike(gym.Env):
         color_map = cv2.applyColorMap(Z_norm, cv2.COLORMAP_VIRIDIS)
 
         # Draw contours
-        levels = np.linspace(Z.min(), Z.max(), 20)
+        levels = np.linspace(Z.min(), Z.max(), 10)
         for level in levels:
             contours = cv2.findContours(
                 (Z >= level).astype(np.uint8),
                 cv2.RETR_EXTERNAL,
                 cv2.CHAIN_APPROX_SIMPLE,
             )[0]
-            for contour in contours:
-                # Add debug print to check contour shape and type
-                print(f"Contour shape: {contour.shape}, dtype: {contour.dtype}")
-
-                # Ensure contour is the correct type and shape
-                contour = np.array(contour, dtype=np.int32).reshape((-1, 1, 2))
-
-                contour = (
-                    contour.squeeze()
-                    * [
-                        self.render_size[1] / Z.shape[1],
-                        self.render_size[0] / Z.shape[0],
-                    ]
-                ).astype(np.int32)
-                cv2.polylines(
-                    color_map, contour.reshape(-1, 1, 2), False, (255, 255, 255), 1
-                )
+            cv2.drawContours(color_map, contours, -1, (255, 255, 255), 1)
 
         return color_map
 
@@ -422,9 +407,10 @@ def main():
     """
     Allows to play with the MordorHike environment using keyboard controls.
     """
-    env = MordorHike.easy(
-        render_mode="human", estimate_belief=True, render_size=(400, 400)
-    )
+    # env = MordorHike.medium(
+    #     render_mode="human", estimate_belief=False, render_size=(400, 400)
+    # )
+    env = MordorHike.easy(render_mode="human", estimate_belief=True)
 
     obs, _ = env.reset()
     print(f"Initial observation: {obs}")
@@ -434,6 +420,7 @@ def main():
 
     while not done:
         env.render()
+        # cv2.imshow("Mordor Hike", cv2.cvtColor(env.render(), cv2.COLOR_RGB2BGR))
         key = cv2.waitKey(0) & 0xFF
 
         if key == ord("q"):
