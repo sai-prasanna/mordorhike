@@ -305,8 +305,9 @@ class MordorHike(gym.Env):
         img = self.background.copy()
 
         # Draw path
-        path = np.array(self.path, dtype=np.int32)
-        cv2.polylines(img, [path], False, (0, 0, 255), 2)
+        if len(self.path) > 1:
+            path = self._world_to_pixel(self.path).astype(np.int32)
+            cv2.polylines(img, [path], False, (0, 0, 255), 2)
 
         # Draw start and goal
         start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
@@ -315,18 +316,22 @@ class MordorHike(gym.Env):
         cv2.circle(img, goal, 5, (255, 0, 0), -1)
 
         # Draw particles
-        for particle, weight in zip(self.particles, self.particle_weights):
-            pos = tuple(map(int, self._world_to_pixel(particle[:2])))
-            size = int(5 + 45 * weight)
-            cv2.circle(img, pos, size, (0, 165, 255), 1)
-            direction = (int(10 * np.cos(particle[2])), int(-10 * np.sin(particle[2])))
-            cv2.line(
-                img,
-                pos,
-                (pos[0] + direction[0], pos[1] + direction[1]),
-                (0, 165, 255),
-                1,
-            )
+        if self.estimate_belief:
+            for particle, weight in zip(self.particles, self.particle_weights):
+                pos = tuple(map(int, self._world_to_pixel(particle[:2])))
+                size = int(5 + 45 * weight)
+                cv2.circle(img, pos, size, (0, 165, 255), 1)
+                direction = (
+                    int(10 * np.cos(particle[2])),
+                    int(-10 * np.sin(particle[2])),
+                )
+                cv2.line(
+                    img,
+                    pos,
+                    (pos[0] + direction[0], pos[1] + direction[1]),
+                    (0, 165, 255),
+                    1,
+                )
 
         # Draw actual position and direction
         pos = tuple(map(int, self._world_to_pixel(self.state[:2])))
@@ -390,17 +395,22 @@ class MordorHike(gym.Env):
         return color_map
 
     def _world_to_pixel(self, coord):
-        x = (
-            (coord[0] - self.lower_bound[0])
+        coord = np.asarray(coord)
+        x = np.round(
+            (coord[..., 0] - self.lower_bound[0])
             / (self.upper_bound[0] - self.lower_bound[0])
             * self.render_size[1]
-        )
-        y = (
-            1
-            - (coord[1] - self.lower_bound[1])
-            / (self.upper_bound[1] - self.lower_bound[1])
-        ) * self.render_size[0]
-        return x, y
+        ).astype(np.int32)
+        # Flip y-axis for image coordinates
+        y = np.round(
+            (
+                1
+                - (coord[..., 1] - self.lower_bound[1])
+                / (self.upper_bound[1] - self.lower_bound[1])
+            )
+            * self.render_size[0]
+        ).astype(np.int32)
+        return np.stack([x, y], axis=-1)
 
     def close(self):
         if self.window is not None:
