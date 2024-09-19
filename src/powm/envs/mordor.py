@@ -1,6 +1,7 @@
+import time
+
 import cv2
 import gymnasium as gym
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats
 from gymnasium import spaces
@@ -37,13 +38,14 @@ class MordorHike(gym.Env):
         num_particles=1000,
         effective_particle_threshold=0.5,
         render_size=(200, 200),
+        lateral_action="strafe",
     ):
         self.dimensions = 2
         self.occluded_dims = list(occlude_dims)
 
         # dynamics
         self.translate_step = translate_step
-        self.rotate_step = rotate_step
+        self.rotate_step = rotate_step if lateral_action == "rotate" else np.pi / 2
         self.translate_std = translate_std
         self.rotate_kappa = rotate_kappa
         self.action_failure_prob = action_failure_prob
@@ -62,10 +64,15 @@ class MordorHike(gym.Env):
         self.render_mode = render_mode
         self.render_size = render_size
 
+        # action mode
+        self.lateral_action = lateral_action
+
         self._setup_landscape()
 
         self.observation_size = 1  # x, y, altitude
-        self.action_size = 4  # forward, backward, turn left, turn right
+        self.action_size = (
+            4  # north, south, east, west or forward, backward, turn left, turn right
+        )
 
         self.observation_space = spaces.Box(
             low=-1.0,
@@ -99,20 +106,31 @@ class MordorHike(gym.Env):
         self.slope = np.array([0.2, 0.2])
 
     def dynamics(self, state, action):
+        # Map action if using cardinal directions
         position, theta = state[..., :2], state[..., 2:]
-
         success_mask = self.np_random.random(len(theta)) > self.action_failure_prob
         if action < 2:
             forward_vector = (
                 np.concatenate(
-                    [np.cos(theta[success_mask]), np.sin(theta[success_mask])], axis=-1
+                    [np.cos(theta[success_mask]), np.sin(theta[success_mask])],
+                    axis=-1,
                 )
                 * self.translate_step
             )
             position[success_mask] += forward_vector * (1 - 2 * action)
-        elif action >= 2:
-            theta[success_mask] += self.rotate_step * (1 - 2 * (action % 2))
-            theta[success_mask] = theta[success_mask]
+        else:
+            if self.lateral_action == "rotate":
+                theta[success_mask] += self.rotate_step * (1 - 2 * (action % 2))
+                theta[success_mask] = theta[success_mask]
+            else:
+                side_vector = (
+                    np.concatenate(
+                        [-np.sin(theta[success_mask]), np.cos(theta[success_mask])],
+                        axis=-1,
+                    )
+                    * self.translate_step
+                )
+                position[success_mask] += side_vector * (1 - 2 * (action % 2))
 
         # Apply Gaussian noise to xy position
         position += self.np_random.normal(0, self.translate_std, position.shape)
@@ -348,8 +366,6 @@ class MordorHike(gym.Env):
         if self.render_mode == "rgb_array":
             return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         elif self.render_mode == "human":
-            if self.window is None:
-                cv2.namedWindow("Mordor Hike", cv2.WINDOW_NORMAL)
             cv2.imshow("Mordor Hike", img)
             cv2.waitKey(1)
 
@@ -397,11 +413,6 @@ class MordorHike(gym.Env):
         ).astype(np.int32)
         return np.stack([x, y], axis=-1)
 
-    def close(self):
-        if self.window is not None:
-            cv2.destroyAllWindows()
-            self.window = None
-
 
 def main():
     """
@@ -410,17 +421,21 @@ def main():
     # env = MordorHike.medium(
     #     render_mode="human", estimate_belief=False, render_size=(400, 400)
     # )
-    env = MordorHike.easy(render_mode="human", estimate_belief=True)
+    env = MordorHike.hard(
+        render_mode="human", lateral_action="strafe", estimate_belief=True
+    )
 
-    obs, _ = env.reset()
+    obs, _ = env.reset(seed=2)
     print(f"Initial observation: {obs}")
 
     cum_rew = 0.0
     done = False
 
     while not done:
+        start_time = time.time()
         env.render()
-        # cv2.imshow("Mordor Hike", cv2.cvtColor(env.render(), cv2.COLOR_RGB2BGR))
+        end_time = time.time()
+        print(f"Time taken render: {end_time - start_time}")
         key = cv2.waitKey(0) & 0xFF
 
         if key == ord("q"):
@@ -435,10 +450,11 @@ def main():
             action = 3  # Turn right
         else:
             continue
-
+        start_time = time.time()
         obs, rew, terminated, truncated, _ = env.step(action)
+        end_time = time.time()
+        print(f"Time taken: {end_time - start_time}")
         done = terminated or truncated
-
         print(f"Action: {action}, Observation: {obs}, Reward: {rew}, Done: {done}")
 
         cum_rew += rew
