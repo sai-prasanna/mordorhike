@@ -39,7 +39,7 @@ class MordorHikeJAX(gym.Env):
         num_particles=1000,
         effective_particle_threshold=0.5,
         render_size=(200, 200),
-        lateral_action="rotate",
+        lateral_action="strafe",
     ):
         self.render_mode = render_mode
         self.render_size = render_size
@@ -63,8 +63,8 @@ class MordorHikeJAX(gym.Env):
         self.lower_bound = jnp.array((-1.0, -1.0))
         self.upper_bound = jnp.array((1.0, 1.0))
         self.fixed_start_pos = jnp.array((-0.8, -0.8))
-        self.uniform_start_lower_bound = jnp.array((-0.5, -0.5))
-        self.uniform_start_upper_bound = jnp.array((0.5, 0.5))
+        self.uniform_start_lower_bound = jnp.array((-1.0, -1.0))
+        self.uniform_start_upper_bound = jnp.array((1.0, 0.5))
         self.goal_position = jnp.array((0.8, 0.8))
         self.mvn_1_mean = jnp.array((0.0, 0.0))
         self.mvn_1_cov = jnp.array(((0.005, 0.0), (0.0, 1.0)))
@@ -79,26 +79,9 @@ class MordorHikeJAX(gym.Env):
         )
         self.action_space = spaces.Discrete(4)
         self.state = None
-
-        # self.device = jax.devices("cpu")[0]
-        # # Pre-compile common operations
-        # print("Compiling JIT functions...")
-        # self._dynamics = jax.jit(self._dynamics, device=self.device)
-        # self._altitude = jax.jit(self._altitude, device=self.device)
-        # self._init_state = jax.jit(self._init_state, device=self.device)
-        # self._observation = jax.jit(self._observation, device=self.device)
-        # self._step = jax.jit(self._step, device=self.device)
-        # self._world_to_pixel = jax.jit(self._world_to_pixel, device=self.device)
-        # print("JIT compilation complete")
-
-        # if self.estimate_belief:
-        #     self._init_belief = jax.jit(self._init_belief, device=self.device)
-        #     self._update_belief = jax.jit(self._update_belief, device=self.device)
-
-        # Initialize path list
         self.path = []
 
-    @partial(jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0,))
     def _init_state(self, key):
         key, subkey1, subkey2 = jax.random.split(key, 3)
 
@@ -121,6 +104,7 @@ class MordorHikeJAX(gym.Env):
 
         return jnp.concatenate([position, jnp.array([theta])])
 
+    @partial(jax.jit, static_argnums=(0,))
     def _observation(self, state, key):
         position = state[:2]
         alt = self._altitude(position)
@@ -131,6 +115,7 @@ class MordorHikeJAX(gym.Env):
         obs = jnp.delete(obs, self.occlude_dims, axis=-1)
         return jnp.clip(obs, -1.0, 1.0)
 
+    @partial(jax.jit, static_argnums=(0,))
     def _step(self, state, action, key):
         key, subkey1, subkey2 = jax.random.split(key, 3)
         new_state = self._dynamics(state, action, subkey1)
@@ -142,6 +127,7 @@ class MordorHikeJAX(gym.Env):
         )
         return new_state, obs, reward, terminated
 
+    @partial(jax.jit, static_argnums=(0,))
     def _dynamics(self, state, action, key):
         position, theta = state[:2], state[2:]
         key, subkey1, subkey2, subkey3 = jax.random.split(key, 4)
@@ -195,6 +181,7 @@ class MordorHikeJAX(gym.Env):
 
         return jnp.concatenate([position, jnp.array(theta)], axis=-1)
 
+    @partial(jax.jit, static_argnums=(0,))
     def _altitude(self, position):
         mountains = jnp.stack(
             [
@@ -213,6 +200,7 @@ class MordorHikeJAX(gym.Env):
         altitude = jnp.max(mountains, axis=0)
         return -jnp.exp(-altitude) + (position @ jnp.array(self.slope)) - 0.02
 
+    @partial(jax.jit, static_argnums=(0,))
     def _init_belief(self, key):
         N = self.num_particles
         key, subkey1, subkey2 = jax.random.split(key, 3)
@@ -240,6 +228,7 @@ class MordorHikeJAX(gym.Env):
 
         return particles, weights
 
+    @partial(jax.jit, static_argnums=(0,))
     def _update_belief(self, particles, weights, action, obs, key):
         if action is not None:
             key, subkey = jax.random.split(key)
@@ -320,26 +309,19 @@ class MordorHikeJAX(gym.Env):
         return np.asarray(obs), info
 
     def step(self, action):
-        start_time = time.time()
         self.key, subkey = jax.random.split(self.key)
         self.state, obs, reward, done = self._step(self.state, action, subkey)
-        jax.block_until_ready(self.state)
-        step_time = time.time() - start_time
-        print(f"Time for _step: {step_time:.6f} seconds")
 
         info = {}
         if self.estimate_belief:
             self.key, subkey = jax.random.split(self.key)
-            start_time = time.time()
             self.particles, self.weights = self._update_belief(
                 self.particles, self.weights, action, obs, subkey
             )
-            belief_update_time = time.time() - start_time
-            print(f"Time for update_belief: {belief_update_time:.6f} seconds")
             info["belief"] = (self.particles, self.weights)
 
         # Add current position to path
-        self.path.append(self.state[:2].tolist())
+        self.path.append(self.state[:2])
 
         return np.asarray(obs), float(reward), bool(done), False, info
 
@@ -352,12 +334,12 @@ class MordorHikeJAX(gym.Env):
             self.background = self._create_background()
 
         # Move computations to numpy for rendering
-        img = np.array(self.background).copy()
+        img = self.background.copy()
 
         # Draw path
         if len(self.path) > 1:
-            path = np.array(self._world_to_pixel(jnp.array(self.path))).astype(np.int32)
-            cv2.polylines(img, [path], False, (0, 0, 255), 2)
+            path_pixels = self._world_to_pixel(self.path)
+            cv2.polylines(img, [np.asarray(path_pixels)], False, (0, 0, 255), 2)
 
         # Draw start and goal
         start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
@@ -365,15 +347,12 @@ class MordorHikeJAX(gym.Env):
         cv2.circle(img, start, 5, (0, 255, 0), -1)
         cv2.circle(img, goal, 5, (255, 0, 0), -1)
 
-        # Draw particles
         if self.estimate_belief:
-            particle_pixels = self._world_to_pixel(self.particles[:, :2])
-            for pixel, particle, weight in zip(
-                particle_pixels, self.particles, self.weights
-            ):
-                pos = tuple(map(int, pixel))
+            for particle, weight in zip(list(self.particles), list(self.weights)):
+                pos = tuple(map(int, self._world_to_pixel(particle[:2])))
                 size = int(5 + 45 * weight)
                 cv2.circle(img, pos, size, (0, 165, 255), 1)
+
                 direction = (
                     int(10 * np.cos(particle[2])),
                     int(-10 * np.sin(particle[2])),
@@ -398,7 +377,6 @@ class MordorHikeJAX(gym.Env):
         if self.render_mode == "rgb_array":
             return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         elif self.render_mode == "human":
-            cv2.namedWindow("Mordor Hike", cv2.WINDOW_NORMAL)
             cv2.imshow("Mordor Hike", img)
             cv2.waitKey(1)
 
@@ -428,6 +406,7 @@ class MordorHikeJAX(gym.Env):
 
         return color_map
 
+    @partial(jax.jit, static_argnums=(0,))
     def _world_to_pixel(self, coord):
         coord = jnp.asarray(coord)
         x = jnp.round(
@@ -446,12 +425,77 @@ class MordorHikeJAX(gym.Env):
         ).astype(jnp.int32)
         return jnp.stack([x, y], axis=-1)
 
+    @partial(jax.jit, static_argnums=(0,))
+    def _rollout(self, state, actions, key):
+        def step(carry, action):
+            state, key, reward_sum = carry
+            key, subkey = jax.random.split(key)
+            new_state, obs, reward, terminated = self._step(state, action, subkey)
+            return (new_state, key, reward_sum + reward), (
+                new_state,
+                reward,
+                terminated,
+            )
+
+        (final_state, _, total_reward), (states, rewards, terminated) = jax.lax.scan(
+            step, (state, key, 0.0), actions
+        )
+        return total_reward, states, rewards, terminated
+
+    @partial(jax.jit, static_argnums=(0, 3, 4, 5, 6, 7))
+    def cem_plan(
+        self,
+        state,
+        key,
+        n_iterations=5,
+        n_samples=1000,
+        n_elite=100,
+        horizon=50,
+        discount=0.99,
+    ):
+        # Initialize probabilities for each action (4 actions)
+        probs = jnp.ones((horizon, 4)) / 4
+
+        def iteration(carry, _):
+            probs, key = carry
+            key, subkey1, subkey2 = jax.random.split(key, 3)
+
+            # Sample actions from multinomial distribution
+            actions = jax.random.categorical(subkey1, probs, shape=(n_samples, horizon))
+
+            subkeys = jax.random.split(subkey2, n_samples)
+            _, _, rewards, terminated = jax.vmap(
+                lambda a, k: self._rollout(state, a, k)
+            )(actions, subkeys)
+
+            # Calculate discounted rewards
+            discount_factors = discount ** jnp.arange(horizon)
+            masked_rewards = jnp.where(terminated, 0, rewards)
+            discounted_rewards = jnp.sum(masked_rewards * discount_factors, axis=1)
+
+            elite_idx = jnp.argsort(discounted_rewards)[-n_elite:]
+            elite_actions = actions[elite_idx]
+
+            # Update probabilities based on elite actions
+            action_mask = jax.nn.one_hot(elite_actions, num_classes=4)
+            new_probs = jnp.sum(action_mask, axis=0) / n_elite
+
+            return (new_probs, key), None
+
+        (final_probs, _), _ = jax.lax.scan(
+            iteration, (probs, key), None, length=n_iterations
+        )
+
+        # Choose the most probable action for the first step
+        return jnp.argmax(final_probs[0])
+
 
 def main():
     """
     Allows to play with the MordorHike environment using keyboard controls.
     """
     jax.config.update("jax_platform_name", "cpu")
+
     env = MordorHikeJAX.hard(
         render_mode="human",
         lateral_action="strafe",
@@ -459,7 +503,7 @@ def main():
         num_particles=1000,
     )
 
-    obs, _ = env.reset(seed=2)
+    obs, _ = env.reset(seed=20)
     print(f"Initial observation: {obs}")
 
     cum_rew = 0.0
@@ -497,5 +541,43 @@ def main():
     cv2.destroyAllWindows()
 
 
+def main_cem():
+    # jax.config.update("jax_platform_name", "cpu")
+
+    env = MordorHikeJAX.hard(
+        render_mode="human",
+        lateral_action="strafe",
+        estimate_belief=True,
+        num_particles=1000,
+    )
+
+    obs, _ = env.reset(seed=20)
+    print(f"Initial observation: {obs}")
+
+    cum_rew = 0.0
+    done = False
+
+    while not done:
+        env.render()
+
+        # Use CEM planning to choose the action
+        action = env.cem_plan(
+            env.state, env.key, n_iterations=5, n_samples=1000, n_elite=100, horizon=200
+        )
+
+        obs, rew, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        print(f"Action: {action}, Observation: {obs}, Reward: {rew}, Done: {done}")
+
+        cum_rew += rew
+
+        time.sleep(0.1)  # Add a small delay to make the visualization easier to follow
+
+    print(f"Total reward: {cum_rew}")
+    env.close()
+    cv2.destroyAllWindows()
+
+
 if __name__ == "__main__":
-    main()
+    # Example usage
+    main_cem()
