@@ -1,5 +1,4 @@
 import time
-from functools import partial
 
 import cv2
 import gymnasium as gym
@@ -60,7 +59,7 @@ class MordorHikeJAX(gym.Env):
         self.lateral_action = lateral_action
         self.device = jax.devices(device)[0]
 
-        # Add other parameters
+        # Jax arrays
         self.occlude_dims = jnp.array(occlude_dims, device=self.device)
         self.lower_bound = jnp.array((-1.0, -1.0), device=self.device)
         self.upper_bound = jnp.array((1.0, 1.0), device=self.device)
@@ -68,12 +67,18 @@ class MordorHikeJAX(gym.Env):
         self.uniform_start_lower_bound = jnp.array((-1.0, -1.0), device=self.device)
         self.uniform_start_upper_bound = jnp.array((1.0, 0.0), device=self.device)
         self.goal_position = jnp.array((0.8, 0.8), device=self.device)
-        self.mvn_1_mean = jnp.array((0.0, 0.0), device=self.device)
-        self.mvn_1_cov = jnp.array(((0.005, 0.0), (0.0, 1.0)), device=self.device)
-        self.mvn_2_mean = jnp.array((0.0, -0.8), device=self.device)
-        self.mvn_2_cov = jnp.array(((1.0, 0.0), (0.0, 0.01)), device=self.device)
-        self.mvn_3_mean = jnp.array((0.0, 0.8), device=self.device)
-        self.mvn_3_cov = jnp.array(((1.0, 0.0), (0.0, 0.01)), device=self.device)
+        self.mountain_mean = jnp.array(
+            [[0.0, 0.0], [0.0, -0.8], [0.0, 0.8]], device=self.device
+        )
+        self.mountain_cov = jnp.array(
+            [
+                [[0.005, 0.0], [0.0, 1.0]],
+                [[1.0, 0.0], [0.0, 0.01]],
+                [[1.0, 0.0], [0.0, 0.01]],
+            ],
+            device=self.device,
+        )
+
         self.slope = jnp.array((0.2, 0.2), device=self.device)
 
         self.observation_space = spaces.Box(
@@ -93,7 +98,199 @@ class MordorHikeJAX(gym.Env):
             factor *= 2
         self.horizon = factor * int(max_manhattan_distance / self.translate_step)
         self.step_count = 0
-        self.jit_functions()
+        self._jit_jax_functions()
+
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            self.key = jax.random.PRNGKey(seed)
+        self.key, subkey = jax.random.split(self.key)
+        self.state = self._init_state(subkey)
+        self.key, subkey = jax.random.split(self.key)
+        obs = self._observation(self.state, subkey)
+
+        info = {}
+        if self.estimate_belief:
+            self.key, subkey = jax.random.split(self.key)
+            self.particles, self.weights = self._init_belief(subkey)
+            self.key, subkey = jax.random.split(self.key)
+            self.particles, self.weights = self._update_belief(
+                self.particles, self.weights, None, obs, subkey
+            )
+            info["belief"] = (np.asarray(self.particles), np.asarray(self.weights))
+
+        # Start tracking path
+        self.path = [self.state[:2].tolist()]
+        self.step_count = 0
+        return np.asarray(obs), info
+
+    def step(self, action):
+        self.key, subkey = jax.random.split(self.key)
+        self.state, obs, reward, terminated = self._step(self.state, action, subkey)
+
+        info = {}
+        if self.estimate_belief:
+            self.key, subkey = jax.random.split(self.key)
+            self.particles, self.weights = self._update_belief(
+                self.particles, self.weights, action, obs, subkey
+            )
+            info["belief"] = (np.asarray(self.particles), np.asarray(self.weights))
+
+        # Add current position to path
+        self.path.append(self.state[:2])
+        truncated = self.step_count >= self.horizon
+        self.step_count += 1
+        return np.asarray(obs), float(reward), bool(terminated), truncated, info
+
+    def render(self):
+        if self.render_mode is None:
+            return
+
+        # Create or get cached background
+        if self.background is None:
+            self.background = self._create_background()
+
+        # Move computations to numpy for rendering
+        img = self.background.copy()
+
+        # Draw path
+        if len(self.path) > 1:
+            path_pixels = self._world_to_pixel(self.path)
+            cv2.polylines(img, [np.asarray(path_pixels)], False, (0, 0, 255), 2)
+
+        # Draw start and goal
+        start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
+        goal = tuple(map(int, self._world_to_pixel(self.goal_position)))
+        cv2.circle(img, start, 5, (0, 255, 0), -1)
+        cv2.circle(img, goal, 5, (255, 0, 0), -1)
+
+        if self.estimate_belief:
+            particle_px = self._world_to_pixel(self.particles[..., :2])
+            particle_end_px = particle_px + (
+                jnp.stack(
+                    [jnp.cos(self.particles[..., 2]), -jnp.sin(self.particles[..., 2])],
+                    axis=-1,
+                )
+                .round()
+                .astype(jnp.int32)
+                * 10
+            )
+            particle_px = np.asarray(particle_px)
+            particle_end_px = np.asarray(particle_end_px)
+            weights = np.asarray(self.weights)
+
+            for particle_px, particle_end_px, weight in zip(
+                particle_px, particle_end_px, weights
+            ):
+                size = int(5 + 45 * weight)
+                cv2.line(img, particle_px, particle_end_px, (0, 165, 255), 1)
+                cv2.circle(img, particle_px, size, (0, 165, 255), 1)
+
+        # Draw actual position and direction
+        state = np.array(self.state)
+        pos = tuple(map(int, self._world_to_pixel(state[:2])))
+        cv2.circle(img, pos, 7, (0, 0, 255), -1)
+        direction = (int(15 * np.cos(state[2])), int(-15 * np.sin(state[2])))
+        cv2.line(
+            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), 2
+        )
+
+        if self.render_mode == "rgb_array":
+            return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif self.render_mode == "human":
+            cv2.imshow("Mordor Hike", img)
+            cv2.waitKey(1)
+
+    def cem_plan(
+        self,
+        state,
+        key,
+        n_iterations=5,
+        n_samples=1000,
+        n_elite=100,
+        horizon=50,
+        discount=0.99,
+        update_smooth_factor=0.1,
+    ):
+        # Initialize probabilities for each action (4 actions)
+        probs = jnp.ones((horizon, 4)) / 4
+
+        def iteration(carry, _):
+            probs, key = carry
+            key, subkey1, subkey2 = jax.random.split(key, 3)
+
+            # Sample actions from multinomial distribution
+            actions = jax.random.categorical(subkey1, probs, shape=(n_samples, horizon))
+
+            subkeys = jax.random.split(subkey2, n_samples)
+            returns, _ = jax.vmap(lambda a, k: self._rollout(state, a, discount, k))(
+                actions, subkeys
+            )
+            elite_idx = jnp.argsort(returns)[-n_elite:]
+            elite_actions = actions[elite_idx]
+
+            # Update probabilities based on elite actions
+            action_mask = jax.nn.one_hot(elite_actions, num_classes=4)
+            new_probs = jnp.sum(action_mask, axis=0) / n_elite
+            action_probs = (
+                new_probs * (1 - update_smooth_factor) + probs * update_smooth_factor
+            )
+            return (action_probs, key), None
+
+        (final_probs, _), _ = jax.lax.scan(
+            iteration, (probs, key), None, length=n_iterations
+        )
+
+        # Choose the most probable action for the first step
+        return jnp.argmax(final_probs[0])
+
+    def reinforce_plan(
+        self,
+        state,
+        key,
+        n_iterations=1000,
+        horizon=50,
+        learning_rate=0.01,
+        discount=0.99,
+        batch_size=32,
+    ):
+        # Initialize action probabilities
+        log_probs = jnp.ones((horizon, 4)) / 4
+
+        def loss_fn(log_probs, key):
+            key, subkey = jax.random.split(key)
+            actions = jax.random.categorical(
+                subkey, log_probs, shape=(batch_size, horizon)
+            )
+            key, subkey = jax.random.split(key)
+            _, (rewards, discount_factors, terminateds) = jax.vmap(
+                lambda a, k: self._rollout(state, a, discount, k)
+            )(actions, jax.random.split(subkey, batch_size))
+            action_log_probs = jnp.sum(
+                jax.nn.log_softmax(log_probs)[None, :, :] * jax.nn.one_hot(actions, 4),
+                axis=-1,
+            )
+            returns = (
+                jnp.cumsum(rewards, axis=-1) * discount_factors * (1 - terminateds)
+            )
+
+            loss = -jnp.mean(action_log_probs * returns)
+            return loss, None
+
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+
+        def update(carry, _):
+            log_probs, key = carry
+            key, subkey = jax.random.split(key)
+            (loss, _), grads = grad_fn(log_probs, subkey)
+            log_probs = log_probs - learning_rate * grads
+            return (log_probs, key), loss
+
+        (final_log_probs, _), _ = jax.lax.scan(
+            update, (log_probs, key), None, length=n_iterations
+        )
+
+        # Choose the most probable action for the first step
+        return jnp.argmax(final_log_probs[0])
 
     def _init_state(self, key):
         key, subkey1, subkey2 = jax.random.split(key, 3)
@@ -195,13 +392,13 @@ class MordorHikeJAX(gym.Env):
         mountains = jnp.stack(
             [
                 jax.scipy.stats.multivariate_normal.pdf(
-                    position, self.mvn_1_mean, self.mvn_1_cov
+                    position, self.mountain_mean[0], self.mountain_cov[0]
                 ),
                 jax.scipy.stats.multivariate_normal.pdf(
-                    position, self.mvn_2_mean, self.mvn_2_cov
+                    position, self.mountain_mean[1], self.mountain_cov[1]
                 ),
                 jax.scipy.stats.multivariate_normal.pdf(
-                    position, self.mvn_3_mean, self.mvn_3_cov
+                    position, self.mountain_mean[2], self.mountain_cov[2]
                 ),
             ]
         )
@@ -292,106 +489,6 @@ class MordorHikeJAX(gym.Env):
 
         return particles, weights
 
-    def reset(self, seed=None, options=None):
-        if seed is not None:
-            self.key = jax.random.PRNGKey(seed)
-        self.key, subkey = jax.random.split(self.key)
-        self.state = self._init_state(subkey)
-        self.key, subkey = jax.random.split(self.key)
-        obs = self._observation(self.state, subkey)
-
-        info = {}
-        if self.estimate_belief:
-            self.key, subkey = jax.random.split(self.key)
-            self.particles, self.weights = self._init_belief(subkey)
-            self.key, subkey = jax.random.split(self.key)
-            self.particles, self.weights = self._update_belief(
-                self.particles, self.weights, None, obs, subkey
-            )
-            info["belief"] = (np.array(self.particles), np.array(self.weights))
-
-        # Start tracking path
-        self.path = [self.state[:2].tolist()]
-        self.step_count = 0
-        return np.asarray(obs), info
-
-    def step(self, action):
-        self.key, subkey = jax.random.split(self.key)
-        self.state, obs, reward, terminated = self._step(self.state, action, subkey)
-
-        info = {}
-        if self.estimate_belief:
-            self.key, subkey = jax.random.split(self.key)
-            self.particles, self.weights = self._update_belief(
-                self.particles, self.weights, action, obs, subkey
-            )
-            info["belief"] = (np.asarray(self.particles), np.asarray(self.weights))
-
-        # Add current position to path
-        self.path.append(self.state[:2])
-        truncated = self.step_count >= self.horizon
-        self.step_count += 1
-        return np.asarray(obs), float(reward), bool(terminated), truncated, info
-
-    def render(self):
-        if self.render_mode is None:
-            return
-
-        # Create or get cached background
-        if self.background is None:
-            self.background = self._create_background()
-
-        # Move computations to numpy for rendering
-        img = self.background.copy()
-
-        # Draw path
-        if len(self.path) > 1:
-            path_pixels = self._world_to_pixel(self.path)
-            cv2.polylines(img, [np.asarray(path_pixels)], False, (0, 0, 255), 2)
-
-        # Draw start and goal
-        start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
-        goal = tuple(map(int, self._world_to_pixel(self.goal_position)))
-        cv2.circle(img, start, 5, (0, 255, 0), -1)
-        cv2.circle(img, goal, 5, (255, 0, 0), -1)
-
-        if self.estimate_belief:
-            particle_px = self._world_to_pixel(self.particles[..., :2])
-            particle_end_px = particle_px + (
-                jnp.stack(
-                    [jnp.cos(self.particles[..., 2]), -jnp.sin(self.particles[..., 2])],
-                    axis=-1,
-                )
-                .round()
-                .astype(jnp.int32)
-                * 10
-            )
-            particle_px = np.asarray(particle_px)
-            particle_end_px = np.asarray(particle_end_px)
-            weights = np.asarray(self.weights)
-
-            for particle_px, particle_end_px, weight in zip(
-                particle_px, particle_end_px, weights
-            ):
-                size = int(5 + 45 * weight)
-                cv2.line(img, particle_px, particle_end_px, (0, 165, 255), 1)
-                cv2.circle(img, particle_px, size, (0, 165, 255), 1)
-
-        # Draw actual position and direction
-        state = np.array(self.state)
-        pos = tuple(map(int, self._world_to_pixel(state[:2])))
-        cv2.circle(img, pos, 7, (0, 0, 255), -1)
-        direction = (int(15 * np.cos(state[2])), int(-15 * np.sin(state[2])))
-        cv2.line(
-            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), 2
-        )
-
-        if self.render_mode == "rgb_array":
-            return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        elif self.render_mode == "human":
-            cv2.imshow("Mordor Hike", img)
-            cv2.waitKey(1)
-
     def _create_background(self):
         height, width = self.render_size
         x = jnp.linspace(self.lower_bound[0], self.upper_bound[0], width)
@@ -457,99 +554,7 @@ class MordorHikeJAX(gym.Env):
         )
         return return_sum, (rewards, discount_factors, terminateds)
 
-    def cem_plan(
-        self,
-        state,
-        key,
-        n_iterations=5,
-        n_samples=1000,
-        n_elite=100,
-        horizon=50,
-        discount=0.99,
-        update_smooth_factor=0.1,
-    ):
-        # Initialize probabilities for each action (4 actions)
-        probs = jnp.ones((horizon, 4)) / 4
-
-        def iteration(carry, _):
-            probs, key = carry
-            key, subkey1, subkey2 = jax.random.split(key, 3)
-
-            # Sample actions from multinomial distribution
-            actions = jax.random.categorical(subkey1, probs, shape=(n_samples, horizon))
-
-            subkeys = jax.random.split(subkey2, n_samples)
-            returns, _ = jax.vmap(lambda a, k: self._rollout(state, a, discount, k))(
-                actions, subkeys
-            )
-            elite_idx = jnp.argsort(returns)[-n_elite:]
-            elite_actions = actions[elite_idx]
-
-            # Update probabilities based on elite actions
-            action_mask = jax.nn.one_hot(elite_actions, num_classes=4)
-            new_probs = jnp.sum(action_mask, axis=0) / n_elite
-            action_probs = (
-                new_probs * (1 - update_smooth_factor) + probs * update_smooth_factor
-            )
-            return (action_probs, key), None
-
-        (final_probs, _), _ = jax.lax.scan(
-            iteration, (probs, key), None, length=n_iterations
-        )
-
-        # Choose the most probable action for the first step
-        return jnp.argmax(final_probs[0])
-
-    def reinforce_plan(
-        self,
-        state,
-        key,
-        n_iterations=1000,
-        horizon=50,
-        learning_rate=0.01,
-        discount=0.99,
-        batch_size=32,
-    ):
-        # Initialize action probabilities
-        log_probs = jnp.ones((horizon, 4)) / 4
-
-        def loss_fn(log_probs, key):
-            key, subkey = jax.random.split(key)
-            actions = jax.random.categorical(
-                subkey, log_probs, shape=(batch_size, horizon)
-            )
-            key, subkey = jax.random.split(key)
-            _, (rewards, discount_factors, terminateds) = jax.vmap(
-                lambda a, k: self._rollout(state, a, discount, k)
-            )(actions, jax.random.split(subkey, batch_size))
-            action_log_probs = jnp.sum(
-                jax.nn.log_softmax(log_probs)[None, :, :] * jax.nn.one_hot(actions, 4),
-                axis=-1,
-            )
-            returns = (
-                jnp.cumsum(rewards, axis=-1) * discount_factors * (1 - terminateds)
-            )
-
-            loss = -jnp.mean(action_log_probs * returns)
-            return loss, None
-
-        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-
-        def update(carry, _):
-            log_probs, key = carry
-            key, subkey = jax.random.split(key)
-            (loss, _), grads = grad_fn(log_probs, subkey)
-            log_probs = log_probs - learning_rate * grads
-            return (log_probs, key), loss
-
-        (final_log_probs, _), _ = jax.lax.scan(
-            update, (log_probs, key), None, length=n_iterations
-        )
-
-        # Choose the most probable action for the first step
-        return jnp.argmax(final_log_probs[0])
-
-    def jit_functions(self):
+    def _jit_jax_functions(self):
         self._init_state = jax.jit(self._init_state, device=self.device)
         self._observation = jax.jit(self._observation, device=self.device)
         self._step = jax.jit(self._step, device=self.device)
