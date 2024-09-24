@@ -74,9 +74,7 @@ class FromGymnasium(embodied.Env, Generic[U, V]):
   def step(self, action):
     if action['reset'] or self._done:
       self._done = False
-      # we don't bother setting ._info here because it gets set below, once we
-      # take the next .step()
-      obs, _ = self._env.reset()
+      obs, self._info = self._env.reset()
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:
       gymnasium_action = cast(V, self._unflatten(action))
