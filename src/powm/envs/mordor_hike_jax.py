@@ -61,8 +61,8 @@ class MordorHikeJAX(gym.Env):
 
         # Jax arrays
         self.occlude_dims = jnp.array(occlude_dims, device=self.device)
-        self.lower_bound = jnp.array((-1.0, -1.0), device=self.device)
-        self.upper_bound = jnp.array((1.0, 1.0), device=self.device)
+        self.map_lower_bound = jnp.array((-1.0, -1.0), device=self.device)
+        self.map_upper_bound = jnp.array((1.0, 1.0), device=self.device)
         self.fixed_start_pos = jnp.array((-0.8, -0.8), device=self.device)
         self.uniform_start_lower_bound = jnp.array((-1.0, -1.0), device=self.device)
         self.uniform_start_upper_bound = jnp.array((1.0, 0.0), device=self.device)
@@ -80,14 +80,15 @@ class MordorHikeJAX(gym.Env):
         )
 
         self.slope = jnp.array((0.2, 0.2), device=self.device)
-
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(1,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(4)
         self.state = None
         self.path = []
-        max_manhattan_distance = np.sum(np.abs(self.upper_bound - self.lower_bound))
+        max_manhattan_distance = np.sum(
+            np.abs(self.map_upper_bound - self.map_lower_bound)
+        )
 
         factor = 2
         if self.start_distribution == "rotation":
@@ -111,12 +112,10 @@ class MordorHikeJAX(gym.Env):
         info = {}
         if self.estimate_belief:
             self.key, subkey = jax.random.split(self.key)
-            self.particles, self.weights = self._init_belief(subkey)
+            self.particles = self._init_belief(subkey)
             self.key, subkey = jax.random.split(self.key)
-            self.particles, self.weights = self._update_belief(
-                self.particles, self.weights, None, obs, subkey
-            )
-            info["belief"] = (np.asarray(self.particles), np.asarray(self.weights))
+            self.particles = self._update_belief(self.particles, None, obs, subkey)
+            info["belief"] = np.asarray(self._normalized_belief())
 
         # Start tracking path
         self.path = [self.state[:2].tolist()]
@@ -130,10 +129,8 @@ class MordorHikeJAX(gym.Env):
         info = {}
         if self.estimate_belief:
             self.key, subkey = jax.random.split(self.key)
-            self.particles, self.weights = self._update_belief(
-                self.particles, self.weights, action, obs, subkey
-            )
-            info["belief"] = (np.asarray(self.particles), np.asarray(self.weights))
+            self.particles = self._update_belief(self.particles, action, obs, subkey)
+            info["belief"] = np.asarray(self._normalized_belief())
 
         # Add current position to path
         self.path.append(self.state[:2])
@@ -176,12 +173,9 @@ class MordorHikeJAX(gym.Env):
             )
             particle_px = np.asarray(particle_px)
             particle_end_px = np.asarray(particle_end_px)
-            weights = np.asarray(self.weights)
 
-            for particle_px, particle_end_px, weight in zip(
-                particle_px, particle_end_px, weights
-            ):
-                size = int(5 + 45 * weight)
+            for particle_px, particle_end_px in zip(particle_px, particle_end_px):
+                size = int(10)
                 cv2.line(img, particle_px, particle_end_px, (0, 165, 255), 1)
                 cv2.circle(img, particle_px, size, (0, 165, 255), 1)
 
@@ -292,6 +286,15 @@ class MordorHikeJAX(gym.Env):
         # Choose the most probable action for the first step
         return jnp.argmax(final_log_probs[0])
 
+    def _normalized_belief(self):
+        return jnp.concatenate(
+            [
+                self.particles[..., :2],
+                (self.particles[..., 2:] - jnp.pi) / jnp.pi,
+            ],
+            axis=-1,
+        )
+
     def _init_state(self, key):
         key, subkey1, subkey2 = jax.random.split(key, 3)
 
@@ -384,7 +387,7 @@ class MordorHikeJAX(gym.Env):
         if self.rotate_kappa is not None:
             theta += jax.random.vonmises(subkey3, 0, self.rotate_kappa, theta.shape)
             theta = jnp.mod(theta + 2 * jnp.pi, 2 * jnp.pi)
-        position = jnp.clip(position, self.lower_bound, self.upper_bound)
+        position = jnp.clip(position, self.map_lower_bound, self.map_upper_bound)
 
         return jnp.concatenate([position, theta], axis=-1)
 
@@ -429,11 +432,10 @@ class MordorHikeJAX(gym.Env):
             )
 
         particles = jnp.column_stack((positions, thetas))
-        weights = jnp.ones(N) / N
 
-        return particles, weights
+        return particles
 
-    def _update_belief(self, particles, weights, action, obs, key):
+    def _update_belief(self, particles, action, obs, key):
         if action is not None:
             key, subkey = jax.random.split(key)
             subkeys = jax.random.split(subkey, particles.shape[0])
@@ -456,43 +458,54 @@ class MordorHikeJAX(gym.Env):
             axis=-1,
         )
 
-        weights = weights * likelihood
+        weights = likelihood
         weights = weights / jnp.sum(weights)  # Normalize weights
 
-        n_eff = 1 / jnp.sum(jnp.square(weights))
-
-        def resample(args):
-            particles, weights, key = args
-            key, subkey = jax.random.split(key)
-            indices = jax.random.choice(
-                subkey,
-                particles.shape[0],
-                shape=(particles.shape[0],),
-                p=weights,
-                replace=True,
-            )
-            return (
-                particles[indices],
-                jnp.ones(particles.shape[0]) / particles.shape[0],
-                key,
-            )
-
-        def keep_current(args):
-            return args
-
-        particles, weights, key = jax.lax.cond(
-            n_eff < self.effective_particle_threshold * self.num_particles,
-            resample,
-            keep_current,
-            (particles, weights, key),
+        key, subkey = jax.random.split(key)
+        indices = jax.random.choice(
+            subkey,
+            particles.shape[0],
+            shape=(particles.shape[0],),
+            p=weights,
+            replace=True,
         )
+        particles = particles[indices]
+        # weights = jnp.ones(particles.shape[0]) / particles.shape[0]
 
-        return particles, weights
+        # weights = weights * likelihood
+        # n_eff = 1 / jnp.sum(jnp.square(weights))
+        # def resample(args):
+        #     particles, weights, key = args
+        #     key, subkey = jax.random.split(key)
+        #     indices = jax.random.choice(
+        #         subkey,
+        #         particles.shape[0],
+        #         shape=(particles.shape[0],),
+        #         p=weights,
+        #         replace=True,
+        #     )
+        #     return (
+        #         particles[indices],
+        #         jnp.ones(particles.shape[0]) / particles.shape[0],
+        #         key,
+        #     )
+
+        # def keep_current(args):
+        #     return args
+
+        # particles, weights, key = jax.lax.cond(
+        #     n_eff < self.effective_particle_threshold * self.num_particles,
+        #     resample,
+        #     keep_current,
+        #     (particles, weights, key),
+        # )
+
+        return particles
 
     def _create_background(self):
         height, width = self.render_size
-        x = jnp.linspace(self.lower_bound[0], self.upper_bound[0], width)
-        y = jnp.linspace(self.lower_bound[1], self.upper_bound[1], height)
+        x = jnp.linspace(self.map_lower_bound[0], self.map_upper_bound[0], width)
+        y = jnp.linspace(self.map_lower_bound[1], self.map_upper_bound[1], height)
         X, Y = jnp.meshgrid(x, y)
         positions = jnp.stack([X, Y], axis=-1)
         Z = self._altitude(positions.reshape(-1, 2)).reshape(height, width)
@@ -518,16 +531,16 @@ class MordorHikeJAX(gym.Env):
     def _world_to_pixel(self, coord):
         coord = jnp.asarray(coord, device=self.device)
         x = jnp.round(
-            (coord[..., 0] - self.lower_bound[0])
-            / (self.upper_bound[0] - self.lower_bound[0])
+            (coord[..., 0] - self.map_lower_bound[0])
+            / (self.map_upper_bound[0] - self.map_lower_bound[0])
             * self.render_size[1]
         ).astype(jnp.int32)
         # Flip y-axis for image coordinates
         y = jnp.round(
             (
                 1
-                - (coord[..., 1] - self.lower_bound[1])
-                / (self.upper_bound[1] - self.lower_bound[1])
+                - (coord[..., 1] - self.map_lower_bound[1])
+                / (self.map_upper_bound[1] - self.map_lower_bound[1])
             )
             * self.render_size[0]
         ).astype(jnp.int32)
@@ -572,54 +585,54 @@ class MordorHikeJAX(gym.Env):
         )
 
 
-def main():
-    """
-    Allows to play with the MordorHike environment using keyboard controls.
-    """
-    env = MordorHikeJAX.hard(
-        render_mode="human",
-        lateral_action="strafe",
-        estimate_belief=True,
-        num_particles=1000,
-        device="cpu",
-    )
+# def main():
+#     """
+#     Allows to play with the MordorHike environment using keyboard controls.
+#     """
+#     env = MordorHikeJAX.hard(
+#         render_mode="human",
+#         lateral_action="strafe",
+#         estimate_belief=True,
+#         num_particles=1000,
+#         device="cpu",
+#     )
 
-    obs, _ = env.reset(seed=1337)
-    print(f"Initial observation: {obs}")
+#     obs, _ = env.reset(seed=1337)
+#     print(f"Initial observation: {obs}")
 
-    cum_rew = 0.0
-    done = False
+#     cum_rew = 0.0
+#     done = False
 
-    while not done:
-        env.render()
-        # cv2.imshow("Mordor Hike", cv2.cvtColor(env.render(), cv2.COLOR_RGB2BGR))
-        key = cv2.waitKey(0) & 0xFF
+#     while not done:
+#         env.render()
+#         # cv2.imshow("Mordor Hike", cv2.cvtColor(env.render(), cv2.COLOR_RGB2BGR))
+#         key = cv2.waitKey(0) & 0xFF
 
-        if key == ord("q"):
-            break
-        elif key == ord("w"):
-            action = 0  # Move forward
-        elif key == ord("s"):
-            action = 1  # Move backward
-        elif key == ord("a"):
-            action = 2  # Turn left
-        elif key == ord("d"):
-            action = 3  # Turn right
-        else:
-            continue
-        # Benchmark time per step
-        start_time = time.time()
-        obs, rew, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
-        time_per_step = time.time() - start_time
-        print(f"Time per step: {time_per_step}")
-        print(f"Action: {action}, Observation: {obs}, Reward: {rew}, Done: {done}")
+#         if key == ord("q"):
+#             break
+#         elif key == ord("w"):
+#             action = 0  # Move forward
+#         elif key == ord("s"):
+#             action = 1  # Move backward
+#         elif key == ord("a"):
+#             action = 2  # Turn left
+#         elif key == ord("d"):
+#             action = 3  # Turn right
+#         else:
+#             continue
+#         # Benchmark time per step
+#         start_time = time.time()
+#         obs, rew, terminated, truncated, _ = env.step(action)
+#         done = terminated or truncated
+#         time_per_step = time.time() - start_time
+#         print(f"Time per step: {time_per_step}")
+#         print(f"Action: {action}, Observation: {obs}, Reward: {rew}, Done: {done}")
 
-        cum_rew += rew
+#         cum_rew += rew
 
-    print(f"Total reward: {cum_rew}")
-    env.close()
-    cv2.destroyAllWindows()
+#     print(f"Total reward: {cum_rew}")
+#     env.close()
+#     cv2.destroyAllWindows()
 
 
 def main_plan():
@@ -627,7 +640,7 @@ def main_plan():
 
     env = MordorHikeJAX.hard(
         render_mode="human",
-        lateral_action="strafe",
+        lateral_action="rotate",
         estimate_belief=True,
         num_particles=1000,
         device="gpu",
@@ -641,12 +654,32 @@ def main_plan():
 
     while not done:
         env.render()
-
-        # # Use CEM planning to choose the action
-        # action = env.cem_plan(
-        #     env.state, env.key, n_iterations=5, n_samples=1000, n_elite=100, horizon=200
-        # )
-        action = env.reinforce_plan(env.state, env.key, n_iterations=100, horizon=200)
+        key = cv2.waitKey(0) & 0xFF
+        if key == ord("q"):
+            break
+        elif key == ord("w"):
+            action = 0  # Move forward
+        elif key == ord("s"):
+            action = 1  # Move backward
+        elif key == ord("a"):
+            action = 2  # Turn left
+        elif key == ord("d"):
+            action = 3  # Turn right
+        elif key == ord("r"):
+            action = env.reinforce_plan(
+                env.state, env.key, n_iterations=100, horizon=200
+            )
+        elif key == ord("c"):
+            action = env.cem_plan(
+                env.state,
+                env.key,
+                n_iterations=5,
+                n_samples=1000,
+                n_elite=100,
+                horizon=200,
+            )
+        else:
+            continue
 
         obs, rew, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
