@@ -37,7 +37,7 @@ class MordorHike(gym.Env):
         estimate_belief=False,
         num_particles=1000,
         effective_particle_threshold=0.5,
-        render_size=(200, 200),
+        render_size=(128, 128),
         lateral_action="strafe",
     ):
         self.dimensions = 2
@@ -238,7 +238,6 @@ class MordorHike(gym.Env):
             thetas = self.np_random.integers(0, num_rotations, N) * self.rotate_step
 
         self.particles = np.column_stack((positions, thetas))
-        self.particle_weights = np.ones(N) / N  # Initialize weights
 
     def step(self, action):
         if not self.action_space.contains(action):
@@ -340,21 +339,22 @@ class MordorHike(gym.Env):
             path = self._world_to_pixel(self.path).astype(np.int32)
             cv2.polylines(img, [path], False, (0, 0, 255), 2)
 
+        scale_factor = int(max(self.render_size) / 128)
         # Draw start and goal
-        start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
+        # start = tuple(map(int, self._world_to_pixel(self.fixed_start_pos)))
         goal = tuple(map(int, self._world_to_pixel(self.goal_position)))
-        cv2.circle(img, start, 5, (0, 255, 0), -1)
-        cv2.circle(img, goal, 5, (255, 0, 0), -1)
+
+        # cv2.circle(img, start, int(4 * scale_factor), (0, 255, 0), -1)
+        cv2.circle(img, goal, int(4 * scale_factor), (255, 0, 0), -1)
 
         # Draw particles
         if self.estimate_belief:
-            for particle, weight in zip(self.particles, self.particle_weights):
+            for particle in self.particles:
                 pos = tuple(map(int, self._world_to_pixel(particle[:2])))
-                size = int(5 + 45 * weight)
-                cv2.circle(img, pos, size, (0, 165, 255), 1)
+                cv2.circle(img, pos, int(2), (0, 165, 255), 1)
                 direction = (
-                    int(10 * np.cos(particle[2])),
-                    int(-10 * np.sin(particle[2])),
+                    int(4 * scale_factor * np.cos(particle[2])),
+                    int(-4 * scale_factor * np.sin(particle[2])),
                 )
                 cv2.line(
                     img,
@@ -366,8 +366,11 @@ class MordorHike(gym.Env):
 
         # Draw actual position and direction
         pos = tuple(map(int, self._world_to_pixel(self.state[:2])))
-        cv2.circle(img, pos, 7, (0, 0, 255), -1)
-        direction = (int(15 * np.cos(self.state[2])), int(-15 * np.sin(self.state[2])))
+        cv2.circle(img, pos, int(5 * scale_factor), (0, 0, 255), -1)
+        direction = (
+            int(7 * scale_factor * np.cos(self.state[2])),
+            int(-7 * scale_factor * np.sin(self.state[2])),
+        )
         cv2.line(
             img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), 2
         )
