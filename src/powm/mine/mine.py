@@ -298,6 +298,8 @@ class MutualInformationNeuralEstimator(nn.Module):
             beliefs = (beliefs[self.belief_part],)
 
         best_valid_estimate = -float("inf")
+        best_train_mi = -float("inf")
+        best_epoch = 0
         best_weights = deepcopy(self.state_dict())
 
         print("Optimizing...")
@@ -366,24 +368,29 @@ class MutualInformationNeuralEstimator(nn.Module):
             else:
                 valid_estimate = mean_value
 
+            # Update statistics for convergence detection
+            if valid_estimate > best_valid_estimate:
+                best_valid_estimate = valid_estimate
+                best_train_mi = mean_value
+                best_epoch = epoch
+                best_weights = deepcopy(self.state_dict())
+
             print("\033[F\033[K", end="")
             print(
                 f"Epoch {epoch:03d}: mean value: {mean_value:.6f}, "
-                f"valid estimate: {valid_estimate:.6f}"
+                f"current valid estimate: {valid_estimate:.6f}, "
+                f"best valid mi: {best_train_mi:.6f} at epoch {best_epoch}"
             )
-
             logger(
                 {
                     "mine_optim/epoch": epoch,
                     "mine_optim/mean_value": mean_value,
                     "mine_optim/valid_estimate": valid_estimate,
+                    "mine_optim/best_train_mi": best_train_mi,
+                    "mine_optim/best_valid_mi": best_valid_estimate,
+                    "mine_optim/best_epoch": best_epoch,
                 }
             )
-
-            # Update statistics for convergence detection
-            if valid_estimate > best_valid_estimate:
-                best_valid_estimate = valid_estimate
-                best_weights = deepcopy(self.state_dict())
 
         if valid_size is not None:
             self.load_state_dict(best_weights)

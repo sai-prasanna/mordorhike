@@ -83,8 +83,10 @@ class JAXAgent(embodied.Agent):
     if self.jaxcfg.jit:
       self._lower_train()
       self._lower_report()
+      self._lower_report_wm_prediction_error()
       self._train = self._train.compile()
       self._report = self._report.compile()
+      self._report_wm_prediction_error = self._report_wm_prediction_error.compile()
     self._stack = jax.jit(lambda xs: jax.tree.map(
         jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)))
     self._split = jax.jit(lambda xs: jax.tree.map(
@@ -229,6 +231,19 @@ class JAXAgent(embodied.Agent):
         mets = self._take_mets(fetch_async(mets))
     return mets, carry
 
+  @embodied.timer.section('jaxagent_report_wm_prediction_error')
+  def report_wm_prediction_error(self, data):
+    seed = data['seed']
+    data = self._filter_data(data)
+    with embodied.timer.section('jit_report_wm_prediction_error'):
+      with self.train_lock:
+        mets = self._report_wm_prediction_error(self.params, data, seed)
+        mets = fetch_async(mets)
+        mets = jax.tree.map(lambda x: x.__array__(), mets)
+        mets = jax.tree.map(
+            lambda x: np.float32(x) if x.dtype == jnp.bfloat16 else x, mets)
+    return mets
+  
   def dataset(self, generator):
     def transform(data):
       return {
@@ -321,6 +336,11 @@ class JAXAgent(embodied.Agent):
       _, (mets, carry) = pure(params, data, carry, seed=seed)
       mets = {k: v[None] for k, v in mets.items()}
       return mets, carry
+    
+    def report_wm_prediction_error(params, data, seed):
+      pure = nj.pure(self.agent.report_wm_prediction_error)
+      _, mets = pure(params, data, seed=seed)
+      return mets
 
     from jax.experimental.shard_map import shard_map
     s = jax.sharding.PartitionSpec('i')  # sharded
@@ -362,6 +382,8 @@ class JAXAgent(embodied.Agent):
         init_report, (tm, ts), ts, static_argnames=['batch_size'])
     self._report = jax.jit(
         report, (tm, ts, ts, ts), (tm, ts))
+    self._report_wm_prediction_error = jax.jit(
+        report_wm_prediction_error, (tm, ts, ts), tm)
 
   def _take_mets(self, mets):
     mets = jax.tree.map(lambda x: x.__array__(), mets)
@@ -423,6 +445,13 @@ class JAXAgent(embodied.Agent):
     carry = self.init_report(self.config.batch_size)
     self._report = self._report.lower(self.params, data, carry, seed)
 
+  def _lower_report_wm_prediction_error(self):
+    B = self.config.batch_size
+    T = self.config.batch_length_eval
+    data = self._dummy_batch(self.spaces, (B, T))
+    data = jax.device_put(data, self.train_sharded)
+    seed = self._next_seeds(self.train_sharded)
+    self._report_wm_prediction_error = self._report_wm_prediction_error.lower(self.params, data, seed)
 
 def fetch_async(value):
   with jax._src.config.explicit_device_get_scope():

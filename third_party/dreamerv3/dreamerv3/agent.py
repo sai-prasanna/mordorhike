@@ -2,16 +2,14 @@ import re
 from functools import partial as bind
 
 import jax
+import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import ruamel.yaml as yaml
 
-from . import jaxagent
-from . import jaxutils
-from . import nets
+from . import embodied, jaxagent, jaxutils, nets
 from . import ninjax as nj
-from . import embodied
 
 f32 = jnp.float32
 treemap = jax.tree_util.tree_map
@@ -458,6 +456,44 @@ class Agent(nj.Module):
           print(f'Skipping gradnorm summary for missing loss: {key}')
 
     return metrics, carry_out
+
+  def report_wm_prediction_error(self, data):
+    self.config.jax.jit and embodied.print(
+        'Tracing report prediction metrics function', color='yellow')
+    data = self.preprocess(data)
+    actions = jaxutils.onehot_dict({k:v for k,v in data.items() if k in self.act_space}, self.act_space)
+    data['stoch'] =  f32(jax.nn.one_hot(data['stoch'], self.config.dyn.rssm.classes))
+    n_steps = self.config.wm_prediction_error_window
+    def compute_step_errors(step):
+      img_acts = {k: lax.dynamic_slice_in_dim(v, step, n_steps, axis=1) for k, v in actions.items()}
+      img_start = {'stoch': data['stoch'][:, step], 
+                 'deter': data['deter'][:, step]}
+      img_outs = self.dyn.imagine(img_start, img_acts)[1]
+      true_obs = {k: lax.dynamic_slice_in_dim(v, step+1, n_steps, axis=1) for k, v in data.items()}
+      decoded_img_obs = dict(**self.dec(img_outs))
+      losses = {k: -v.log_prob(true_obs[k].astype(f32)) for k, v in decoded_img_obs.items()}
+      cumulative_terminal = jnp.cumsum(true_obs['is_terminal'], axis=1)
+      valid_mask = (cumulative_terminal == 0)
+      
+      # Zero out losses after terminal state
+      masked_losses = {k: v * valid_mask for k, v in losses.items()}
+      
+      # Count valid items in each step
+      valid_steps = jnp.sum(valid_mask, axis=0)
+      
+      # Compute mean and sum for each loss
+      loss_stats = {k: {
+          'mean': jnp.sum(v, axis=0) / valid_steps,
+          'weight': valid_steps,
+      } for k, v in masked_losses.items()}
+      return loss_stats
+    wm_prediction_errors = jax.vmap(compute_step_errors)(jnp.arange(self.config.batch_length_eval - n_steps - 1))
+    wm_prediction_errors = {
+      k: {'mean': (v['mean'] * v['weight']).sum(axis=0) / v['weight'].sum(axis=0), 
+          'weight': v['weight'].sum(axis=0)} 
+      for k, v in wm_prediction_errors.items()
+    }
+    return wm_prediction_errors
 
   def preprocess(self, obs):
     spaces = {**self.obs_space, **self.act_space, **self.aux_spaces}
