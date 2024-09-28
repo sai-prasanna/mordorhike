@@ -1,5 +1,9 @@
 {
     "python.analysis.extraPaths": [
         "third_party/dreamerv3"
-    ]
+    ],
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    "black-formatter.args": ["--force-exclude", "third_party"]
 }
