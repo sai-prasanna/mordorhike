@@ -174,7 +174,7 @@ mordorhike:
   dec.spaces: vector
   run:
     train_ratio: 512
-    num_envs: 8
+    num_envs: 16
     steps: 1e5
     save_every: 2e4
     log_every: 1e4
