@@ -91,7 +91,6 @@ defaults:
   batch_size: 16
   batch_length: 65
   batch_length_eval: 33
-  wm_prediction_error_window: 5
   replay_length: 0
   replay_length_eval: 0
   replay_context: 1
