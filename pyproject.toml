@@ -18,6 +18,7 @@ dreamerv3 = { path = "third_party/dreamerv3", editable = true }
 
 [project.scripts]
 train-dreamer = "powm.algorithms.train_dreamer:main"
+eval-dreamer = "powm.algorithms.eval_dreamer:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -223,5 +223,4 @@ def main(argv=None):
 
 # Example usage
 if __name__ == "__main__":
-    # main()
-    main(argv="--logdir experiments/mordor_hike/medium/42_small".split(" "))
+    main()
