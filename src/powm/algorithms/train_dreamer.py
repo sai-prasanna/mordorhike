@@ -172,7 +172,7 @@ def train(make_agent, make_replay, make_env, make_logger, args):
             timestamped_path = logdir / f"checkpoint_{step.value:08d}.ckpt"
             checkpoint.save(timestamped_path)
 
-    checkpoint._worker
+    checkpoint._worker.shutdown()
     logger.close()
 
 

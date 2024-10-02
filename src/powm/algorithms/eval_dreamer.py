@@ -126,7 +126,6 @@ def main(argv=None):
     parsed, other = embodied.Flags(logdir="").parse_known(argv)
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
-    results = {}
     config = embodied.Config.load(str(logdir / "config.yaml"))
     # config = config.update(
     #     {"report_openl_context": 1, "batch_size": 16, "batch_length_eval": 64}
@@ -218,7 +217,7 @@ def main(argv=None):
             logger.write()
 
     env.close()
-    return results
+    logger.close()
 
 
 # Example usage
