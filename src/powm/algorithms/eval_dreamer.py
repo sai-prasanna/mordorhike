@@ -218,6 +218,7 @@ def main(argv=None):
 
     env.close()
     logger.close()
+    driver.close()
 
 
 # Example usage

@@ -174,6 +174,7 @@ def train(make_agent, make_replay, make_env, make_logger, args):
 
     checkpoint._worker.shutdown()
     logger.close()
+    driver.close()
 
 
 def make_env(config, env_id=0, estimate_belief=False):
