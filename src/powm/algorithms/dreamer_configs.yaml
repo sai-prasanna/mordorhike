@@ -7,6 +7,10 @@ defaults:
   eval_dir: ''
   filter: 'score|length|fps|ratio|train/.*_loss$|train/rand/.*/mean'
   tensorboard_videos: True
+  wandb:
+    project: powm
+    group: ''
+    name: ''
 
   replay:
     size: 5e6

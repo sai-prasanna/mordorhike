@@ -223,23 +223,41 @@ def make_agent(config):
 
 
 def make_logger(config, is_eval=False):
-    logdir = embodied.Path(config.logdir)
+    config_logdir = embodied.Path(config.logdir)
+    logdir = config_logdir
     if is_eval:
         logdir = logdir / "eval"
         logdir.mkdir()
+
+    loggers = [
+        embodied.logger.TerminalOutput(config.filter),
+        embodied.logger.JSONLOutput(logdir, f"metrics.jsonl"),
+        embodied.logger.TensorBoardOutput(logdir),
+        VideoOutput(logdir),
+    ]
+    if config.wandb.project:
+        loggers.append(
+            embodied.logger.WandBOutput(
+                wandb_init_kwargs=dict(
+                    project=config.wandb.project,
+                    group=config.wandb.group or config_logdir.parent.name,
+                    name=(
+                        config.wandb.name
+                        or (
+                            config_logdir.name + "_eval"
+                            if is_eval
+                            else config_logdir.name
+                        )
+                    ),
+                    config=dict(config),
+                    resume=True,
+                    dir=logdir,
+                )
+            ),
+        )
     return embodied.Logger(
         embodied.Counter(),
-        [
-            embodied.logger.TerminalOutput(config.filter),
-            embodied.logger.JSONLOutput(logdir, f"metrics.jsonl"),
-            embodied.logger.TensorBoardOutput(logdir),
-            VideoOutput(logdir),
-            # embodied.logger.WandBOutput(wandb_init_kwargs={
-            #     'project': 'dreamerv3-compat',
-            #     'name': logdir.name,
-            #     'config': dict(config),
-            # }),
-        ],
+        loggers,
     )
 
 

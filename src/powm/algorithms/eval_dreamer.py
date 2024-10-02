@@ -127,12 +127,6 @@ def main(argv=None):
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     config = embodied.Config.load(str(logdir / "config.yaml"))
-    # config = config.update(
-    #     {"report_openl_context": 1, "batch_size": 16, "batch_length_eval": 64}
-    # )
-    # config = config.update(
-    #     {"jax.jit": False, "jax.transfer_guard": False, "batch_length_eval": 32}
-    # )
 
     # Set seeds
     random.seed(config.seed)
@@ -215,8 +209,6 @@ def main(argv=None):
                 prefix=f"eval_eps_{eps}",
             )
             logger.write()
-
-    env.close()
     logger.close()
     driver.close()
 
