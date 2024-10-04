@@ -155,11 +155,20 @@ size2m: &size2m
   .*\.depth: 8
   .*\.units: 128
 
+size5m: &size5m
+  dyn.rssm: {deter: 1024, hidden: 128, classes: 32}
+  .*\.depth: 16
+  .*\.units: 256
+
 size12m: &size12m
   dyn.rssm: {deter: 2048, hidden: 256, classes: 16}
   .*\.depth: 16
   .*\.units: 256
 
+size50m: &size50m
+  dyn.rssm: {deter: 4096, hidden: 512, classes: 32}
+  .*\.depth: 32
+  .*\.units: 512
 
 multicpu:
   jax:

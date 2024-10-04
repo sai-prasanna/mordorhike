@@ -343,7 +343,7 @@ def main(argv=None):
     train(
         bind(make_agent, config),
         bind(make_replay, config),
-        bind(make_env, config, estimate_belief=True),
+        bind(make_env, config, estimate_belief=False),
         bind(make_logger, config),
         args,
     )
