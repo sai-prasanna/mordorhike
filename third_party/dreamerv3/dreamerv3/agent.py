@@ -132,7 +132,7 @@ class Agent(nj.Module):
     embed = self.enc(obs, bdims=1)
     prevact = jaxutils.onehot_dict(prevact, self.act_space)
     lat, out = self.dyn.observe(
-        prevlat, prevact, embed, obs['is_first'], bdims=1)
+        prevlat, prevact, embed, obs['is_first'], bdims=1, sample=(mode=="train"))
     actor = self.actor(out, bdims=1)
     act = sample(actor)
 

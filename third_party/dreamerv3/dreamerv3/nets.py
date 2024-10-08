@@ -50,7 +50,7 @@ class RSSM(nj.Module):
       keys += ('feat',)
     return {k: outs[k][:, -1] for k in keys}
 
-  def observe(self, carry, action, embed, reset, bdims=2):
+  def observe(self, carry, action, embed, reset, bdims=2, sample=True):
     kw = dict(**self.kw, norm=self.norm, act=self.act)
     assert bdims in (1, 2)
     if isinstance(action, dict):
@@ -67,7 +67,10 @@ class RSSM(nj.Module):
     for i in range(self.obslayers):
       x = self.get(f'obs{i}', Linear, self.hidden, **kw)(x)
     logit = self._logit('obslogit', x)
-    stoch = cast(self._dist(logit).sample(seed=nj.seed()))
+    if sample:
+      stoch = cast(self._dist(logit).sample(seed=nj.seed()))
+    else:
+      stoch = cast(self._dist(logit).mode())
     carry = dict(deter=deter, stoch=stoch)
     outs = dict(deter=deter, stoch=stoch, logit=logit)
     if self.cell == 'stack':
