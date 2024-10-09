@@ -18,9 +18,9 @@ def epsilon_greedy_policy(agent, eps):
     random_agent = embodied.RandomAgent(agent.obs_space, agent.act_space)
 
     def policy(*args, **kwargs):
-        acts, out, (lat, act) = agent.policy(*args, mode="eval", **kwargs)
+        acts, out, (lat, act) = agent.policy(*args, **kwargs)
         if random.random() < eps:
-            acts, _, _ = random_agent.policy(*args, mode="eval", **kwargs)
+            acts, _, _ = random_agent.policy(*args, **kwargs)
         act = jax.device_put(acts, agent.policy_sharded)
         return acts, out, (lat, act)
 
@@ -62,7 +62,7 @@ def collect_beliefs(logger, agent, config, driver, n_samples, eps):
         n_classes = config.dyn.rssm.classes
         stoch_one_hot = np.zeros((len(stoch), n_classes))
         stoch_one_hot[np.arange(len(stoch)), stoch] = 1
-        pred_beliefs[worker].append(np.concatenate([deter, stoch_one_hot.reshape(-1)]))
+        pred_beliefs[worker].append(np.concatenate([deter, stoch_one_hot]))
         if tran["is_last"]:
             result = ep_stats.result()
             ckpt_stats.add("score", result.pop("score"), agg="avg")
@@ -123,10 +123,18 @@ def collect_beliefs(logger, agent, config, driver, n_samples, eps):
 
 
 def main(argv=None):
-    parsed, other = embodied.Flags(logdir="").parse_known(argv)
+    parsed, other = embodied.Flags(
+        logdir="",
+        mine_epochs=100,
+        mine_hidden_size=256,
+        mine_layers=2,
+        mine_alpha=0.01,
+        mine_deep_set_size=16,
+    ).parse_known(argv)
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     config = embodied.Config.load(str(logdir / "config.yaml"))
+    config = config.update({"jax.jit": False, "jax.transfer_guard": False})
 
     # Set seeds
     random.seed(config.seed)
@@ -161,10 +169,10 @@ def main(argv=None):
             mine = MutualInformationNeuralEstimator(
                 hs_sizes=train_pred_beliefs.size(-1),
                 belief_sizes=[train_true_beliefs.size(-1)],
-                hidden_size=256,
-                num_layers=2,
-                alpha=0.01,
-                representation_sizes=[16],
+                hidden_size=parsed.mine_hidden_size,
+                num_layers=parsed.mine_layers,
+                alpha=parsed.mine_alpha,
+                representation_sizes=[parsed.mine_deep_set_size],
                 belief_part=None,
                 device="cuda",
             )
@@ -215,4 +223,4 @@ def main(argv=None):
 
 # Example usage
 if __name__ == "__main__":
-    main()
+    main(argv=["--logdir", "experiments/mordor_hike/medium/42_small"])
