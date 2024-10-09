@@ -574,6 +574,19 @@ def main():
                 discount=0.99,
                 update_smooth_factor=0.1,
             )
+        elif key == ord("e"):
+            sampled_particle = random.choice(env.particles)
+            env.particles = np.tile(sampled_particle, (env.num_particles, 1))
+            print(sampled_particle, env.particles.shape)
+            action = env.cem_plan(
+                sampled_particle,
+                n_iterations=5,
+                n_samples=1000,
+                n_elite=100,
+                horizon=50,
+                discount=0.99,
+                update_smooth_factor=0.1,
+            )
         elif key == ord("r"):
             action = env.reinforce_plan(
                 env.state,
