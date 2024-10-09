@@ -134,7 +134,6 @@ def main(argv=None):
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     config = embodied.Config.load(str(logdir / "config.yaml"))
-    config = config.update({"jax.jit": False, "jax.transfer_guard": False})
 
     # Set seeds
     random.seed(config.seed)
@@ -223,4 +222,4 @@ def main(argv=None):
 
 # Example usage
 if __name__ == "__main__":
-    main(argv=["--logdir", "experiments/mordor_hike/medium/42_small"])
+    main()
