@@ -105,16 +105,19 @@ class Agent(nj.Module):
     if self.config.replay_context:
       latdtype = jaxutils.COMPUTE_DTYPE
       latdtype = np.float32 if latdtype == jnp.bfloat16 else latdtype
-      spaces['deter'] = embodied.Space(latdtype, self.config.dyn.rssm.deter)
-      spaces['stoch'] = embodied.Space(np.int32, self.config.dyn.rssm.stoch)
+      spaces['deter'] = embodied.Space(latdtype, (self.config.n_particles, self.config.dyn.rssm.deter))
+      spaces['stoch'] = embodied.Space(np.int32, (self.config.n_particles, self.config.dyn.rssm.stoch))
     return spaces
 
   def init_policy(self, batch_size):
     prevact = {
         k: jnp.zeros((batch_size, *v.shape), v.dtype)
         for k, v in self.act_space.items()}
-    prevlat = [self.dyn.initial(batch_size) for _ in range(self.config.n_particles)]
-    prevlat = {k: jnp.array([prevlat[i][k] for i in range(self.config.n_particles)]) for k in prevlat[0]}
+    single_particle_lat = self.dyn.initial(batch_size)
+    prevlat = jax.tree_map(
+      lambda x: jnp.expand_dims(x, axis=1).repeat(
+        self.config.n_particles, axis=1), 
+        single_particle_lat)
     return (prevlat, prevact)
 
   def init_train(self, batch_size):
@@ -127,7 +130,6 @@ class Agent(nj.Module):
     return self.init_train(batch_size)
 
   def policy(self, obs, carry, mode='train'):
-    # NEED TO SWAP PARTICLE AND BATCH DIMENSION TO not break PARLLAEL ENV CODE
     self.config.jax.jit and embodied.print(
         'Tracing policy function', color='yellow')
     prevlats, prevact = carry
@@ -138,9 +140,11 @@ class Agent(nj.Module):
     particle_outs = []
     particle_lats = []
     for i in range(self.config.n_particles):
-      prevlat = {k: prevlats[k][i] for k in prevlats}
+      prevlat = {k: prevlats[k][:, i] for k in prevlats}
       post_lat, post_out = self.dyn.observe(
-          prevlat, prevact, embed, obs['is_first'], bdims=1, sample=(mode=="train"))
+          prevlat, prevact, embed, obs['is_first'], 
+          bdims=1,
+          sample=(mode == "train" or self.config.n_particles > 1))
       particle_lats.append(post_lat)
       post_dist = self.dyn._dist(post_out['logit'])
       post_proposal_likelihood = post_dist.log_prob(prevlat['stoch'])
@@ -160,19 +164,19 @@ class Agent(nj.Module):
     particle_weights = particle_weights / jnp.sum(particle_weights, axis=0)
     # vmap over particle_weights
     particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x), in_axes=1)(particle_weights)
-    particle_inds = particle_inds.swapaxes(0, 1)
     # Index particles for each batch element
-    batch_size = particle_inds.shape[1]
-    batch_indices = jnp.arange(batch_size)[:, None]
-    particle_outs = {k: v[particle_inds, batch_indices] for k, v in particle_outs.items()}
-    particle_lats = {k: v[particle_inds, batch_indices] for k, v in particle_lats.items()}
+    batch_size = particle_inds.shape[0]
+    batch_indices = jnp.arange(batch_size)
+    particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
+    particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
     particle_acts = []
     for i in range(self.config.n_particles):
-      act = sample(self.actor({k: v[i] for k, v in particle_outs.items()}, bdims=1))
+      # Always sample actions as our policy is stochastic
+      act = sample(self.actor({k: v[:, i] for k, v in particle_outs.items()}, bdims=1))
       particle_acts.append(act)
-    particle_acts = {k: jnp.stack([particle_acts[i][k] for i in range(self.config.n_particles)], axis=0) for k in particle_acts[0]}
+    particle_acts = {k: jnp.stack([particle_acts[i][k] for i in range(self.config.n_particles)], axis=1) for k in particle_acts[0]}
     # Assume all actions are discrete, sum and argmax
-    act = {k: jnp.argmax(jnp.sum(particle_acts[k], axis=0), axis=-1) for k in particle_acts}
+    act = {k: jnp.argmax(jnp.sum(particle_acts[k], axis=1), axis=-1) for k in particle_acts}
     outs = {}
     if self.config.replay_context:
       outs.update({k: particle_outs[k] for k in self.aux_spaces if k != 'stepid'})
@@ -192,16 +196,17 @@ class Agent(nj.Module):
         k in outs for k in self.aux_spaces
         if k not in ('stepid', 'finite', 'is_online')), (
               list(outs.keys()), self.aux_spaces)
-
-
     return act, outs, (particle_lats, act)
  
-  
   def train(self, data, carry):
     self.config.jax.jit and embodied.print(
         'Tracing train function', color='yellow')
     data = self.preprocess(data)
     stepid = data.pop('stepid')
+    for k in self.aux_spaces.keys():
+      if k in data:
+        # pick first particle it is sorted random anyways
+        data[k] = data[k][..., 0, :] 
 
     if self.config.replay_context:
       K = self.config.replay_context
@@ -439,6 +444,24 @@ class Agent(nj.Module):
       return {}, carry
     metrics = {}
     data = self.preprocess(data)
+    stepid = data.pop('stepid')
+    for k in self.aux_spaces.keys():
+      if k in data:
+        # pick first particle it is sorted random anyways
+        data[k] = data[k][..., 0, :]
+
+    if self.config.replay_context:
+      K = self.config.replay_context
+      data = data.copy()
+      # context = {k: data.pop(k)[:, :K] for k in self.aux_spaces if k in data}
+      context = {
+          k: data.pop(k)[:, :K] for k in self.aux_spaces if k != 'stepid'}
+      context['stoch'] = f32(jax.nn.one_hot(
+          context['stoch'], self.config.dyn.rssm.classes))
+      prevlat = self.dyn.outs_to_carry(context)
+      carry = prevlat, carry[1]
+      data = {k: v[:, K:] for k, v in data.items()}
+      stepid = stepid[:, K:]
 
     # Train metrics
     _, (outs, carry_out, mets) = self.loss(data, carry, update=False)
@@ -501,34 +524,51 @@ class Agent(nj.Module):
     data['stoch'] =  f32(jax.nn.one_hot(data['stoch'], self.config.dyn.rssm.classes))
     n_steps = self.config.wm_prediction_error_window
     def compute_step_errors(step):
-      img_acts = {k: lax.dynamic_slice_in_dim(v, step, n_steps, axis=1) for k, v in actions.items()}
-      img_start = {'stoch': data['stoch'][:, step], 
-                 'deter': data['deter'][:, step]}
-      img_outs = self.dyn.imagine(img_start, img_acts)[1]
-      true_obs = {k: lax.dynamic_slice_in_dim(v, step+1, n_steps, axis=1) for k, v in data.items()}
-      decoded_img_obs = dict(**self.dec(img_outs))
-      losses = {k: -v.log_prob(true_obs[k].astype(f32)) for k, v in decoded_img_obs.items()}
-      cumulative_terminal = jnp.cumsum(true_obs['is_terminal'], axis=1)
+      img_acts = treemap(lambda v: lax.dynamic_slice_in_dim(v, step, n_steps, axis=1), actions)
+      # true_obs is not per particle
+      data_slice = treemap(lambda v: lax.dynamic_slice_in_dim(v, step+1, n_steps, axis=1), data)
+
+      # vmap over particles and compute losses
+      def compute_particle_pred_errors(particle_idx):
+        img_start = {'stoch': data['stoch'][:, particle_idx, step], 
+                     'deter': data['deter'][:, particle_idx, step]}
+        img_outs = self.dyn.imagine(img_start, img_acts)[1]
+        decoded_img_obs = dict(**self.dec(img_outs))
+        # assume nll is the prediction error
+        pred_errors = treemap(lambda v, t: -v.log_prob(t.astype(f32)), decoded_img_obs, {k: data_slice[k] for k in decoded_img_obs})
+        return pred_errors
+
+      pred_errors = jax.vmap(compute_particle_pred_errors)(jnp.arange(self.config.n_particles))
+      pred_errors = {k: v.reshape(-1, self.config.n_particles, n_steps) for k, v in pred_errors.items()}
+      pred_errors = {k: jnp.min(v, axis=1) for k, v in pred_errors.items()}
+
+      cumulative_terminal = jnp.cumsum(data_slice['is_terminal'], axis=1)
       valid_mask = (cumulative_terminal == 0)
       
       # Zero out losses after terminal state
-      masked_losses = {k: v * valid_mask for k, v in losses.items()}
+      masked_errors = {k: v * valid_mask for k, v in pred_errors.items()}
       
       # Count valid items in each step
       valid_steps = jnp.sum(valid_mask, axis=0)
       
-      # Compute mean and sum for each loss
-      loss_stats = {k: {
-          'mean': jnp.sum(v, axis=0) / valid_steps,
-          'weight': valid_steps,
-      } for k, v in masked_losses.items()}
-      return loss_stats
+      # Compute mean and number of items for each step loss
+      error_stats = treemap(
+          lambda v: {
+              'mean': jnp.sum(v, axis=0) / valid_steps,
+              'weight': valid_steps,
+          },
+          masked_errors
+      )
+      return error_stats
     wm_prediction_errors = jax.vmap(compute_step_errors)(jnp.arange(self.config.batch_length_eval - n_steps - 1))
-    wm_prediction_errors = {
-      k: {'mean': (v['mean'] * v['weight']).sum(axis=0) / v['weight'].sum(axis=0), 
-          'weight': v['weight'].sum(axis=0)} 
-      for k, v in wm_prediction_errors.items()
-    }
+    wm_prediction_errors = treemap(
+        lambda v: {
+            'mean': (v['mean'] * v['weight']).sum(axis=0) / v['weight'].sum(axis=0),
+            'weight': v['weight'].sum(axis=0)
+        },
+        wm_prediction_errors,
+        is_leaf=lambda x: isinstance(x, dict) and 'mean' in x and 'weight' in x
+    )
     return wm_prediction_errors
 
   def preprocess(self, obs):

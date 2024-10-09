@@ -59,10 +59,18 @@ def collect_beliefs(logger, agent, config, driver, n_samples, eps, policy_mode):
         deter = tran["deter"]
         stoch = tran["stoch"]
         n_classes = config.dyn.rssm.classes
-        stoch_one_hot = np.zeros((len(stoch), n_classes))
-        stoch_one_hot[np.arange(len(stoch)), stoch] = 1
+        n_particles = config.n_particles
+        stoch_one_hot = np.zeros((*stoch.shape, n_classes))
+        # Add the one-hot encoding. stoch is particle x entries and stoch_onehot is particle x entries x n_classes
+        for i in range(n_particles):
+            stoch_one_hot[i, np.arange(len(stoch[i])), stoch[i]] = 1
+
+        # Flatten the last two dimensions of stoch_one_hot
         stoch_one_hot_flattened = stoch_one_hot.reshape(*stoch_one_hot.shape[:-2], -1)
-        pred_beliefs[worker].append(np.concatenate([deter, stoch_one_hot_flattened]))
+
+        pred_beliefs[worker].append(
+            np.concatenate([deter, stoch_one_hot_flattened], axis=-1)
+        )
         if tran["is_last"]:
             result = ep_stats.result()
             ckpt_stats.add("score", result.pop("score"), agg="avg")
@@ -137,7 +145,8 @@ def main(argv=None):
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     config = embodied.Config.load(str(logdir / "config.yaml"))
-    config = embodied.Flags(config).parse(other)
+    # config = config.update({"jax.jit": False, "jax.transfer_guard": False})
+
     # Set seeds
     random.seed(config.seed)
     np.random.seed(config.seed)
@@ -169,12 +178,13 @@ def main(argv=None):
             )
 
             mine = MutualInformationNeuralEstimator(
-                hs_sizes=train_pred_beliefs.size(-1),
+                hs_size=train_pred_beliefs.size(-1),
                 belief_sizes=[train_true_beliefs.size(-1)],
                 hidden_size=parsed.mine_hidden_size,
                 num_layers=parsed.mine_layers,
                 alpha=parsed.mine_alpha,
-                representation_sizes=[parsed.mine_deep_set_size],
+                hidden_deepset_encode_size=parsed.mine_deep_set_size,
+                belief_deepset_encode_sizes=[parsed.mine_deep_set_size],
                 belief_part=None,
                 device="cuda",
             )

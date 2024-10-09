@@ -138,9 +138,9 @@ class MutualInformationNeuralEstimator(nn.Module):
     """Mutual Information Neural Estimator (see arXiv:1801.04062).
 
     Arguments
-    - hs_sizes: int
+    - hs_size: int
         Dimension of the hidden states
-    - belief_sizes: int
+    - belief_sizes: List[int]
         Dimension of the beliefs (or state particles)
     - hidden_size: int
         Number of neurons in hidden layers
@@ -149,20 +149,25 @@ class MutualInformationNeuralEstimator(nn.Module):
     - alpha: float
         Exponentially moving average rate for the bias-corrected
         gradient denominator
-    - representation_size: int
+    - hidden_deepset_encode_size: int
+        If None, hidden is processed as a vector, if
+        integer, the hidden is processed as a set of particles using a deep
+        set whose set representation size is `hidden_deepset_encode_size`.
+    - belief_deepset_encode_sizes: List[int]
         If None, belief is processed as a vector, if
         integer, the belief is processed as a set of particles using a deep
-        set whose set representation size is `representation_size`.
+        set whose set representation size is `belief_deepset_encode_sizes`.
     """
 
     def __init__(
         self,
-        hs_sizes,
+        hs_size,
         belief_sizes,
         hidden_size,
         num_layers,
         alpha,
-        representation_sizes,
+        hidden_deepset_encode_size,
+        belief_deepset_encode_sizes,
         belief_part=None,
         device=torch.device("cpu"),
     ):
@@ -170,24 +175,31 @@ class MutualInformationNeuralEstimator(nn.Module):
 
         self.belief_part = belief_part
         if self.belief_part is not None:
-            representation_sizes = (representation_sizes[self.belief_part],)
+            belief_deepset_encode_sizes = (
+                belief_deepset_encode_sizes[self.belief_part],
+            )
             belief_sizes = (belief_sizes[self.belief_part],)
 
-        input_size = hs_sizes
-        self.encoders = []
+        if hidden_deepset_encode_size is not None:
+            self.hidden_encoder = DeepSet(hs_size, hidden_deepset_encode_size)
+            input_size = hidden_deepset_encode_size
+        else:
+            input_size = hs_size
+
+        self.belief_encoders = []
         for representation_size, belief_size in zip(
-            representation_sizes,
+            belief_deepset_encode_sizes,
             belief_sizes,
         ):
             if representation_size is None:
-                self.encoders.append(None)
+                self.belief_encoders.append(None)
                 input_size += belief_size
             else:
                 encoder = DeepSet(belief_size, representation_size)
-                self.encoders.append(encoder)
+                self.belief_encoders.append(encoder)
                 input_size += representation_size
 
-        self.encoders = nn.ModuleList(self.encoders)
+        self.belief_encoders = nn.ModuleList(self.belief_encoders)
 
         hidden_layers = []
 
@@ -238,7 +250,7 @@ class MutualInformationNeuralEstimator(nn.Module):
         """
         encoded, encoded_marginal = [], []
         for belief_part, belief_part_marginal, encoder in zip(
-            beliefs, beliefs_marginal, self.encoders
+            beliefs, beliefs_marginal, self.belief_encoders
         ):
 
             if encoder is not None:
@@ -247,6 +259,10 @@ class MutualInformationNeuralEstimator(nn.Module):
 
             encoded.append(belief_part)
             encoded_marginal.append(belief_part_marginal)
+
+        if self.hidden_encoder is not None:
+            hiddens = self.hidden_encoder(hiddens)
+            hiddens_marginal = self.hidden_encoder(hiddens_marginal)
 
         joint = torch.cat([hiddens] + encoded, dim=1)
         pom = torch.cat([hiddens_marginal] + encoded_marginal, dim=1)
