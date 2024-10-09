@@ -60,6 +60,7 @@ class MordorHikeJAX(gym.Env):
         self.device = jax.devices(device)[0]
 
         # Jax arrays
+        self.key = jax.random.PRNGKey(0)
         self.occlude_dims = jnp.array(occlude_dims, device=self.device)
         self.map_lower_bound = jnp.array((-1.0, -1.0), device=self.device)
         self.map_upper_bound = jnp.array((1.0, 1.0), device=self.device)
