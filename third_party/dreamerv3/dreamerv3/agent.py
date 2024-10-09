@@ -96,7 +96,7 @@ class Agent(nj.Module):
 
   @property
   def policy_keys(self):
-    return '/(enc|dyn|actor)/'
+    return '/(enc|dyn|actor|dec)/'
 
   @property
   def aux_spaces(self):
@@ -113,7 +113,9 @@ class Agent(nj.Module):
     prevact = {
         k: jnp.zeros((batch_size, *v.shape), v.dtype)
         for k, v in self.act_space.items()}
-    return (self.dyn.initial(batch_size), prevact)
+    prevlat = [self.dyn.initial(batch_size) for _ in range(self.config.n_particles)]
+    prevlat = {k: jnp.array([prevlat[i][k] for i in range(self.config.n_particles)]) for k in prevlat[0]}
+    return (prevlat, prevact)
 
   def init_train(self, batch_size):
     prevact = {
@@ -125,20 +127,55 @@ class Agent(nj.Module):
     return self.init_train(batch_size)
 
   def policy(self, obs, carry, mode='train'):
+    # NEED TO SWAP PARTICLE AND BATCH DIMENSION TO not break PARLLAEL ENV CODE
     self.config.jax.jit and embodied.print(
         'Tracing policy function', color='yellow')
-    prevlat, prevact = carry
+    prevlats, prevact = carry
     obs = self.preprocess(obs)
     embed = self.enc(obs, bdims=1)
     prevact = jaxutils.onehot_dict(prevact, self.act_space)
-    lat, out = self.dyn.observe(
-        prevlat, prevact, embed, obs['is_first'], bdims=1, sample=(mode=="train"))
-    actor = self.actor(out, bdims=1)
-    act = sample(actor)
-
+    particle_weights = []
+    particle_outs = []
+    particle_lats = []
+    for i in range(self.config.n_particles):
+      prevlat = {k: prevlats[k][i] for k in prevlats}
+      post_lat, post_out = self.dyn.observe(
+          prevlat, prevact, embed, obs['is_first'], bdims=1, sample=(mode=="train"))
+      particle_lats.append(post_lat)
+      post_dist = self.dyn._dist(post_out['logit'])
+      post_proposal_likelihood = post_dist.log_prob(prevlat['stoch'])
+      _, prior_out = self.dyn.imagine(post_lat, prevact, bdims=1)
+      prior_dist = self.dyn._dist(prior_out['logit'])
+      dynamics_likelihood = prior_dist.log_prob(post_lat['stoch'])
+      dists = self.dec(post_out, bdims=1)
+      obs_likelihood = jnp.sum(jnp.array([v.log_prob(obs[k].astype(f32)) for k, v in dists.items()]), axis=0)
+      log_weight = obs_likelihood + dynamics_likelihood - post_proposal_likelihood
+      particle_weights.append(log_weight)
+      particle_outs.append(post_out)
+    particle_outs = {k: jnp.stack([particle_outs[i][k] for i in range(self.config.n_particles)], axis=0) for k in particle_outs[0]}
+    particle_lats = {k: jnp.stack([particle_lats[i][k] for i in range(self.config.n_particles)], axis=0) for k in particle_lats[0]}
+    # resample particles
+    particle_weights = jnp.stack(particle_weights, axis=0)
+    particle_weights = jnp.exp(particle_weights - jnp.max(particle_weights, axis=0))
+    particle_weights = particle_weights / jnp.sum(particle_weights, axis=0)
+    # vmap over particle_weights
+    particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x), in_axes=1)(particle_weights)
+    particle_inds = particle_inds.swapaxes(0, 1)
+    # Index particles for each batch element
+    batch_size = particle_inds.shape[1]
+    batch_indices = jnp.arange(batch_size)[:, None]
+    particle_outs = {k: v[particle_inds, batch_indices] for k, v in particle_outs.items()}
+    particle_lats = {k: v[particle_inds, batch_indices] for k, v in particle_lats.items()}
+    particle_acts = []
+    for i in range(self.config.n_particles):
+      act = sample(self.actor({k: v[i] for k, v in particle_outs.items()}, bdims=1))
+      particle_acts.append(act)
+    particle_acts = {k: jnp.stack([particle_acts[i][k] for i in range(self.config.n_particles)], axis=0) for k in particle_acts[0]}
+    # Assume all actions are discrete, sum and argmax
+    act = {k: jnp.argmax(jnp.sum(particle_acts[k], axis=0), axis=-1) for k in particle_acts}
     outs = {}
     if self.config.replay_context:
-      outs.update({k: out[k] for k in self.aux_spaces if k != 'stepid'})
+      outs.update({k: particle_outs[k] for k in self.aux_spaces if k != 'stepid'})
       outs['stoch'] = jnp.argmax(outs['stoch'], -1).astype(jnp.int32)
 
     outs['finite'] = {
@@ -147,20 +184,19 @@ class Agent(nj.Module):
             v.min(range(1, v.ndim)),
             v.max(range(1, v.ndim)))
         for k, v in jax.tree_util.tree_leaves_with_path(dict(
-            obs=obs, prevlat=prevlat, prevact=prevact,
-            embed=embed, act=act, out=out, lat=lat,
+            obs=obs, prevlat=prevlats, prevact=prevact,
+            embed=embed, act=act, out=particle_outs, lat=particle_lats,
         ))}
-
+      
     assert all(
         k in outs for k in self.aux_spaces
         if k not in ('stepid', 'finite', 'is_online')), (
               list(outs.keys()), self.aux_spaces)
 
-    act = {
-        k: jnp.nanargmax(act[k], -1).astype(jnp.int32)
-        if s.discrete else act[k] for k, s in self.act_space.items()}
-    return act, outs, (lat, act)
 
+    return act, outs, (particle_lats, act)
+ 
+  
   def train(self, data, carry):
     self.config.jax.jit and embodied.print(
         'Tracing train function', color='yellow')
