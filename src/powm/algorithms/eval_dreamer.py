@@ -145,8 +145,7 @@ def main(argv=None):
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     config = embodied.Config.load(str(logdir / "config.yaml"))
-    # config = config.update({"jax.jit": False, "jax.transfer_guard": False})
-
+    config = embodied.Flags(config).parse(other)
     # Set seeds
     random.seed(config.seed)
     np.random.seed(config.seed)
