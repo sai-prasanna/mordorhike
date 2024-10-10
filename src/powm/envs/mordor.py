@@ -1,6 +1,7 @@
 import time
 
 import cv2
+import random
 import gymnasium as gym
 import numpy as np
 import scipy.stats
@@ -75,8 +76,8 @@ class MordorHike(gym.Env):
         )
 
         self.observation_space = spaces.Box(
-            low=-1.0,
-            high=1.0,
+            low=-np.inf,
+            high=np.inf,
             shape=(self.observation_size,),
             dtype=np.float32,
         )
@@ -168,7 +169,7 @@ class MordorHike(gym.Env):
         obs = np.delete(obs, self.occluded_dims, axis=-1)
 
         # Clip observation to [-1, 1]
-        np.clip(obs, -1.0, 1.0, out=obs)
+        # np.clip(obs, -1.0, 1.0, out=obs)
 
         return obs.astype(np.float32)
 

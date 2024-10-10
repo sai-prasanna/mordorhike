@@ -177,7 +177,7 @@ def train(make_agent, make_replay, make_env, make_logger, args):
     driver.close()
 
 
-def make_env(config, env_id=0, estimate_belief=False):
+def make_env(config, env_id=0, **kwargs):
 
     from dreamerv3.embodied.envs.from_gymnasium import FromGymnasium
 
@@ -190,11 +190,7 @@ def make_env(config, env_id=0, estimate_belief=False):
             "hard": MordorHike.hard,
             "easy": MordorHike.easy,
         }
-        env = task2cls[task](
-            render_mode="rgb_array",
-            lateral_action="strafe",
-            estimate_belief=estimate_belief,
-        )
+        env = task2cls[task](render_mode="rgb_array", **kwargs)
     else:
         raise ValueError(f"Unknown suite: {suite}")
 
@@ -222,11 +218,11 @@ def make_agent(config):
     return agent
 
 
-def make_logger(config, is_eval=False):
+def make_logger(config, metric_dir=""):
     config_logdir = embodied.Path(config.logdir)
     logdir = config_logdir
-    if is_eval:
-        logdir = logdir / "eval"
+    if metric_dir:
+        logdir = logdir / metric_dir
         logdir.mkdir()
 
     loggers = [
@@ -244,8 +240,8 @@ def make_logger(config, is_eval=False):
                     name=(
                         config.wandb.name
                         or (
-                            config_logdir.name + "_eval"
-                            if is_eval
+                            config_logdir.name + f"_{metric_dir}"
+                            if metric_dir
                             else config_logdir.name
                         )
                     ),
@@ -276,7 +272,8 @@ class VideoOutput(AsyncOutput):
                 if isinstance(value, np.ndarray) and len(value.shape) == 4:
                     gif_bytes = _encode_gif(value, self._fps)
                     with open(
-                        self._logdir / f"{step:06d}_{name.split('/')[-1]}.gif", "wb"
+                        self._logdir / f"{step:06d}_{'_'.join(name.split('/'))}.gif",
+                        "wb",
                     ) as f:
                         f.write(gif_bytes)
             except Exception as e:
@@ -343,7 +340,7 @@ def main(argv=None):
     train(
         bind(make_agent, config),
         bind(make_replay, config),
-        bind(make_env, config, estimate_belief=False),
+        bind(make_env, config),
         bind(make_logger, config),
         args,
     )

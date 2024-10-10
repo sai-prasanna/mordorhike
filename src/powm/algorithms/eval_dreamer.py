@@ -14,30 +14,29 @@ from powm.algorithms.train_dreamer import make_env, make_logger
 from powm.mine.mine import MutualInformationNeuralEstimator
 
 
-def epsilon_greedy_policy(agent, eps):
+def epsilon_greedy_policy(agent, eps, policy_mode="train"):
     random_agent = embodied.RandomAgent(agent.obs_space, agent.act_space)
 
     def policy(*args, **kwargs):
-        acts, out, (lat, act) = agent.policy(*args, **kwargs)
+        acts, out, (lat, act) = agent.policy(*args, mode=policy_mode, **kwargs)
         if random.random() < eps:
-            acts, _, _ = random_agent.policy(*args, **kwargs)
+            acts, _, _ = random_agent.policy(*args, mode=policy_mode, **kwargs)
         act = jax.device_put(acts, agent.policy_sharded)
         return acts, out, (lat, act)
 
     return policy
 
 
-def collect_beliefs(logger, agent, config, driver, n_samples, eps):
+def collect_beliefs(logger, agent, config, driver, n_samples, eps, policy_mode):
     pred_beliefs = [[] for _ in range(driver.length)]
     true_beliefs = [[] for _ in range(driver.length)]
     driver.reset(agent.init_policy)
-    policy = epsilon_greedy_policy(agent, eps)
+    policy = epsilon_greedy_policy(agent, eps, policy_mode)
     episodes = defaultdict(embodied.Agg)
     ckpt_stats = embodied.Agg()
     replay = embodied.replay.Replay(
         length=config.batch_length_eval,
         capacity=config.replay.size,
-        directory=embodied.Path(config.logdir) / "eval_replay",
         online=True,
     )
 
@@ -62,7 +61,8 @@ def collect_beliefs(logger, agent, config, driver, n_samples, eps):
         n_classes = config.dyn.rssm.classes
         stoch_one_hot = np.zeros((len(stoch), n_classes))
         stoch_one_hot[np.arange(len(stoch)), stoch] = 1
-        pred_beliefs[worker].append(np.concatenate([deter, stoch_one_hot]))
+        stoch_one_hot_flattened = stoch_one_hot.reshape(*stoch_one_hot.shape[:-2], -1)
+        pred_beliefs[worker].append(np.concatenate([deter, stoch_one_hot_flattened]))
         if tran["is_last"]:
             result = ep_stats.result()
             ckpt_stats.add("score", result.pop("score"), agg="avg")
@@ -130,11 +130,14 @@ def main(argv=None):
         mine_layers=2,
         mine_alpha=0.01,
         mine_deep_set_size=16,
+        metric_dir="eval",
+        policy_mode="train",
     ).parse_known(argv)
+    assert parsed.logdir, "Logdir is required"
     logdir = embodied.Path(parsed.logdir)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     config = embodied.Config.load(str(logdir / "config.yaml"))
-
+    config = embodied.Flags(config).parse(other)
     # Set seeds
     random.seed(config.seed)
     np.random.seed(config.seed)
@@ -143,7 +146,7 @@ def main(argv=None):
     # Create the environment once
     env = make_env(config)
     agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
-    logger = make_logger(config, is_eval=True)
+    logger = make_logger(config, metric_dir=parsed.metric_dir)
 
     fns = [bind(make_env, config, env_id=i, estimate_belief=True) for i in range(1)]
     driver = embodied.Driver(fns, config.run.driver_parallel)
@@ -153,7 +156,6 @@ def main(argv=None):
     for ckpt_path in sorted(ckpt_paths, key=lambda x: int(x.stem.split("_")[-1])):
         checkpoint.load(ckpt_path, keys=["agent", "step"])
         logger.step = checkpoint.step
-        episode = embodied.Agg()
 
         for eps in [0.0, 0.5, 1.0]:
             train_pred_beliefs, train_true_beliefs = collect_beliefs(
@@ -163,6 +165,7 @@ def main(argv=None):
                 driver,
                 10 * config.batch_size * config.batch_length_eval,
                 eps,
+                policy_mode=parsed.policy_mode,
             )
 
             mine = MutualInformationNeuralEstimator(
@@ -204,6 +207,7 @@ def main(argv=None):
                 driver,
                 2 * config.batch_size * config.batch_length_eval,
                 eps,
+                policy_mode=parsed.policy_mode,
             )
             test_mi = mine.estimate(test_pred_beliefs, (test_true_beliefs,))
             logger.add(
