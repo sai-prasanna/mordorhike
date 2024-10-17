@@ -128,7 +128,7 @@ defaults:
   conhead: {layers: 1, units: 1024, act: silu, norm: rms, dist: binary, outscale: 1.0, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}
   contdisc: True
   rssm_loss: {free: 1.0}
-
+  n_particles: 1
   # Actor Critic
   actor: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}
   critic: {layers: 3, units: 1024, act: silu, norm: rms, dist: symexp_twohot, outscale: 0.0, inputs: [deter, stoch], winit: normal, bins: 255, block_fans: False, block_norm: False}

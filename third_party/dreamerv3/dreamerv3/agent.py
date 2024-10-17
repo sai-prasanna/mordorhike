@@ -540,7 +540,8 @@ class Agent(nj.Module):
 
       pred_errors = jax.vmap(compute_particle_pred_errors)(jnp.arange(self.config.n_particles))
       pred_errors = {k: v.reshape(-1, self.config.n_particles, n_steps) for k, v in pred_errors.items()}
-      pred_errors = {k: jnp.min(v, axis=1) for k, v in pred_errors.items()}
+      # compute mean step error over particles
+      pred_errors = {k: jnp.mean(v, axis=1) for k, v in pred_errors.items()}
 
       cumulative_terminal = jnp.cumsum(data_slice['is_terminal'], axis=1)
       valid_mask = (cumulative_terminal == 0)
