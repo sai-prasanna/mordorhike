@@ -156,17 +156,19 @@ class Agent(nj.Module):
       log_weight = obs_likelihood + dynamics_likelihood - post_proposal_likelihood
       particle_weights.append(log_weight)
       particle_outs.append(post_out)
-    particle_outs = {k: jnp.stack([particle_outs[i][k] for i in range(self.config.n_particles)], axis=0) for k in particle_outs[0]}
-    particle_lats = {k: jnp.stack([particle_lats[i][k] for i in range(self.config.n_particles)], axis=0) for k in particle_lats[0]}
+    particle_outs = {k: jnp.stack([particle_outs[i][k] for i in range(self.config.n_particles)], axis=1) for k in particle_outs[0]}
+    particle_lats = {k: jnp.stack([particle_lats[i][k] for i in range(self.config.n_particles)], axis=1) for k in particle_lats[0]}
+  
     # resample particles
-    particle_weights = jnp.stack(particle_weights, axis=0)
-    particle_weights = jnp.exp(particle_weights - jnp.max(particle_weights, axis=0))
-    particle_weights = particle_weights / jnp.sum(particle_weights, axis=0)
+    particle_weights = jnp.stack(particle_weights, axis=1)
+    particle_weights = jnp.exp(particle_weights - jnp.max(particle_weights, axis=1, keepdims=True))
+    particle_weights = particle_weights / jnp.sum(particle_weights, axis=1, keepdims=True)
     # vmap over particle_weights
-    particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x), in_axes=1)(particle_weights)
+    particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(1,), p=x))(particle_weights)
     # Index particles for each batch element
     batch_size = particle_inds.shape[0]
     batch_indices = jnp.arange(batch_size)
+
     particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
     particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
     particle_acts = []
@@ -517,6 +519,8 @@ class Agent(nj.Module):
     return metrics, carry_out
 
   def report_wm_prediction_error(self, data):
+    if True:
+      return {}
     self.config.jax.jit and embodied.print(
         'Tracing report prediction metrics function', color='yellow')
     data = self.preprocess(data)
