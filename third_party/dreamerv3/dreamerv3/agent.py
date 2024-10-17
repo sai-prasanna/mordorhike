@@ -124,7 +124,13 @@ class Agent(nj.Module):
     prevact = {
         k: jnp.zeros((batch_size, *v.shape), v.dtype)
         for k, v in self.act_space.items()}
-    return (self.dyn.initial(batch_size), prevact)
+    
+    single_particle_lat = self.dyn.initial(batch_size)
+    prevlat = jax.tree_map(
+      lambda x: jnp.expand_dims(x, axis=1).repeat(
+        self.config.n_particles, axis=1), 
+        single_particle_lat)
+    return (prevlat, prevact)
 
   def init_report(self, batch_size):
     return self.init_train(batch_size)
@@ -136,16 +142,11 @@ class Agent(nj.Module):
     obs = self.preprocess(obs)
     embed = self.enc(obs, bdims=1)
     prevact = jaxutils.onehot_dict(prevact, self.act_space)
-    particle_weights = []
-    particle_outs = []
-    particle_lats = []
-    for i in range(self.config.n_particles):
-      prevlat = {k: prevlats[k][:, i] for k in prevlats}
+    def filter_step(prevlat):
       post_lat, post_out = self.dyn.observe(
           prevlat, prevact, embed, obs['is_first'], 
           bdims=1,
           sample=(mode == "train" or self.config.n_particles > 1))
-      particle_lats.append(post_lat)
       post_dist = self.dyn._dist(post_out['logit'])
       post_proposal_likelihood = post_dist.log_prob(prevlat['stoch'])
       _, prior_out = self.dyn.imagine(post_lat, prevact, bdims=1)
@@ -154,20 +155,18 @@ class Agent(nj.Module):
       dists = self.dec(post_out, bdims=1)
       obs_likelihood = jnp.sum(jnp.array([v.log_prob(obs[k].astype(f32)) for k, v in dists.items()]), axis=0)
       log_weight = obs_likelihood + dynamics_likelihood - post_proposal_likelihood
-      particle_weights.append(log_weight)
-      particle_outs.append(post_out)
-    particle_outs = {k: jnp.stack([particle_outs[i][k] for i in range(self.config.n_particles)], axis=1) for k in particle_outs[0]}
-    particle_lats = {k: jnp.stack([particle_lats[i][k] for i in range(self.config.n_particles)], axis=1) for k in particle_lats[0]}
-  
+      weight = jnp.exp(log_weight)
+      return post_lat, post_out, weight
+    
+    particle_lats, particle_outs, particle_weights = jax.vmap(filter_step, in_axes=1, out_axes=1)(prevlats)
     # resample particles
-    particle_weights = jnp.stack(particle_weights, axis=1)
-    particle_weights = jnp.exp(particle_weights - jnp.max(particle_weights, axis=1, keepdims=True))
     particle_weights = particle_weights / jnp.sum(particle_weights, axis=1, keepdims=True)
-    # vmap over particle_weights
-    particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(1,), p=x))(particle_weights)
+
+
+    particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x))(particle_weights)
     # Index particles for each batch element
     batch_size = particle_inds.shape[0]
-    batch_indices = jnp.arange(batch_size)
+    batch_indices = jnp.arange(batch_size)[:, None]
 
     particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
     particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
@@ -205,10 +204,6 @@ class Agent(nj.Module):
         'Tracing train function', color='yellow')
     data = self.preprocess(data)
     stepid = data.pop('stepid')
-    for k in self.aux_spaces.keys():
-      if k in data:
-        # pick first particle it is sorted random anyways
-        data[k] = data[k][..., 0, :] 
 
     if self.config.replay_context:
       K = self.config.replay_context
@@ -265,7 +260,7 @@ class Agent(nj.Module):
 
   def loss(self, data, carry, update=True):
     metrics = {}
-    prevlat, prevact = carry
+    p_prevlat, prevact = carry
 
     # Replay rollout
     prevacts = {
@@ -273,7 +268,15 @@ class Agent(nj.Module):
         for k in self.act_space}
     prevacts = jaxutils.onehot_dict(prevacts, self.act_space)
     embed = self.enc(data)
-    newlat, outs = self.dyn.observe(prevlat, prevacts, embed, data['is_first'])
+    # prevlat is for multiple particles, so we need to map observe over the
+    p_newlat, p_outs = jax.vmap(lambda prevlat: self.dyn.observe(prevlat, prevacts, embed, data['is_first']), in_axes=1, out_axes=(1, 2))(p_prevlat)
+    # lat is batch x particle x ...
+    # outs is batch x time x particle x ...
+    # so we pick the first particle for both lat and outs
+    newlat = treemap(lambda x: x[:, 0, ...], p_newlat)
+    outs = treemap(lambda x: x[:, :, 0, ...], p_outs)
+
+
     rew_feat = outs if self.config.reward_grad else sg(outs)
     dists = dict(
         **self.dec(outs),
@@ -434,9 +437,9 @@ class Agent(nj.Module):
     losses = {k: v * self.scales[k] for k, v in losses.items()}
     loss = jnp.stack([v.mean() for k, v in losses.items()]).sum()
     newact = {k: data[k][:, -1] for k in self.act_space}
-    outs = {'replay_outs': replay_outs, 'prevacts': prevacts, 'embed': embed}
+    outs = {'replay_outs': p_outs, 'prevacts': prevacts, 'embed': embed}
     outs.update({f'{k}_loss': v for k, v in losses.items()})
-    carry = (newlat, newact)
+    carry = (p_newlat, newact)
     return loss, (outs, carry, metrics)
 
   def report(self, data, carry):
@@ -447,10 +450,6 @@ class Agent(nj.Module):
     metrics = {}
     data = self.preprocess(data)
     stepid = data.pop('stepid')
-    for k in self.aux_spaces.keys():
-      if k in data:
-        # pick first particle it is sorted random anyways
-        data[k] = data[k][..., 0, :]
 
     if self.config.replay_context:
       K = self.config.replay_context
@@ -474,8 +473,10 @@ class Agent(nj.Module):
     num_obs = min(self.config.report_openl_context, T // 2)
     # Rerun observe to get the correct intermediate state, because
     # outs_to_carry doesn't work with num_obs<context.
+
+    p_lat = treemap(lambda x: x[:, 0, ...], carry[0])
     img_start, rec_outs = self.dyn.observe(
-        carry[0],
+        p_lat,
         {k: v[:, :num_obs] for k, v in outs['prevacts'].items()},
         outs['embed'][:, :num_obs],
         data['is_first'][:, :num_obs])
@@ -519,8 +520,6 @@ class Agent(nj.Module):
     return metrics, carry_out
 
   def report_wm_prediction_error(self, data):
-    if True:
-      return {}
     self.config.jax.jit and embodied.print(
         'Tracing report prediction metrics function', color='yellow')
     data = self.preprocess(data)
