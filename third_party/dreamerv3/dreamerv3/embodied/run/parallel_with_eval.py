@@ -116,6 +116,7 @@ def parallel_learner(agent, barrier, args):
   logdir = embodied.Path(args.logdir)
   agg = embodied.Agg()
   usage = embodied.Usage(**args.usage)
+  assert args.log_units == "seconds", args.log_units
   should_log = embodied.when.Clock(args.log_every)
   should_eval = embodied.when.Clock(args.eval_every)
   should_save = embodied.when.Clock(args.save_every)
@@ -200,7 +201,9 @@ def parallel_learner(agent, barrier, args):
 
     if should_save():
       checkpoint.save()
-
+      if args.save_each_ckpt:
+        timestamped_path = logdir / f"checkpoint_{logger.step.value}.ckpt"
+        checkpoint.save(timestamped_path)
 
 def parallel_replay(make_replay, make_replay_eval, args):
   if isinstance(make_replay, bytes):

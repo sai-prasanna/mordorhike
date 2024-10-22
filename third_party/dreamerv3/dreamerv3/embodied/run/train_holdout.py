@@ -29,8 +29,10 @@ def train_holdout(
   batch_steps = args.batch_size * args.batch_length
   should_expl = embodied.when.Until(args.expl_until)
   should_train = embodied.when.Ratio(args.train_ratio / batch_steps)
-  should_log = embodied.when.Clock(args.log_every)
-  should_save = embodied.when.Clock(args.save_every)
+  log_when_klass = embodied.when.Clock if args.log_units == "seconds" else embodied.when.Every
+
+  should_log = log_when_klass(args.log_every)
+  should_save = log_when_klass(args.save_every)
 
   @embodied.timer.section('log_step')
   def log_step(tran, worker):
@@ -118,10 +120,10 @@ def train_holdout(
       logger.add(agg.result())
       logger.add(epstats.result(), prefix='epstats')
       if len(train_replay):
-        mets, _ = agent.report(next(dataset_report), init_report)
+        mets, _ = agent.report(next(dataset_report), carry_report)
         logger.add(mets, prefix='report')
       if len(eval_replay):
-        mets, _ = agent.report(next(dataset_eval), init_report)
+        mets, _ = agent.report(next(dataset_eval), carry_report)
         logger.add(mets, prefix='eval')
       logger.add(embodied.timer.stats(), prefix='timer')
       logger.add(train_replay.stats(), prefix='replay')
@@ -132,5 +134,7 @@ def train_holdout(
 
     if should_save(step):
       checkpoint.save()
-
+      if args.save_each_ckpt:
+        timestamped_path = logdir / f"checkpoint_{step.value}.ckpt"
+        checkpoint.save(timestamped_path)
   logger.close()
