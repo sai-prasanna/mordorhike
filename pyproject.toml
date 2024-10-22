@@ -9,17 +9,19 @@ dependencies = [
     "gymnasium>=0.29",
     "matplotlib>=3.9.2",
     "opencv-python>=4.10.0.84",
-    "py-spy>=0.3.14",
+    "recall2imagine",
     "torch>=2.4.1",
     "wandb[media,video]>=0.18.3",
 ]
 
 [tool.uv.sources]
 dreamerv3 = { path = "third_party/dreamerv3", editable = true }
+recall2imagine = { path = "third_party/recall2imagine", editable = true }
 
 [project.scripts]
 train-dreamer = "powm.algorithms.train_dreamer:main"
 eval-dreamer = "powm.algorithms.eval_dreamer:main"
+train-r2i = "powm.algorithms.train_r2i:main"
 
 [build-system]
 requires = ["hatchling"]
