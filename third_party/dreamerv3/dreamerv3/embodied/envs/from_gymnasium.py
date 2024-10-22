@@ -25,12 +25,14 @@ V = TypeVar('V')
 
 class FromGymnasium(embodied.Env, Generic[U, V]):
   def __init__(self, env: Union[str, gymnasium.Env[U, V]], obs_key='image', act_key='action', **kwargs):
+    seed = kwargs.pop('seed', None)
     if isinstance(env, str):
       self._env: gymnasium.Env[U, V] = gymnasium.make(env, render_mode="rgb_array", **kwargs)
     else:
       assert not kwargs, kwargs
       assert env.render_mode == "rgb_array", f"render_mode must be rgb_array, got {env.render_mode}"
       self._env = env
+    self._env.reset(seed=seed)
     self._obs_dict = hasattr(self._env.observation_space, 'spaces')
     self._act_dict = hasattr(self._env.action_space, 'spaces')
     self._obs_key = obs_key

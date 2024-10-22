@@ -4,6 +4,7 @@ import pathlib
 import sys
 import warnings
 from functools import partial as bind
+import ruamel.yaml as yaml
 
 directory = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(directory.parent))
@@ -194,20 +195,21 @@ def make_env(config, index, **overrides):
     import memory_maze  # noqa
     from embodied.envs import from_gym
   ctor = {
-      'dummy': 'embodied.envs.dummy:Dummy',
-      'gym': 'embodied.envs.from_gym:FromGym',
-      'dm': 'embodied.envs.from_dmenv:FromDM',
-      'crafter': 'embodied.envs.crafter:Crafter',
-      'dmc': 'embodied.envs.dmc:DMC',
-      'atari': 'embodied.envs.atari:Atari',
-      'atari100k': 'embodied.envs.atari:Atari',
-      'dmlab': 'embodied.envs.dmlab:DMLab',
-      'minecraft': 'embodied.envs.minecraft:Minecraft',
-      'loconav': 'embodied.envs.loconav:LocoNav',
-      'pinpad': 'embodied.envs.pinpad:PinPad',
-      'langroom': 'embodied.envs.langroom:LangRoom',
-      'procgen': 'embodied.envs.procgen:ProcGen',
-      'bsuite': 'embodied.envs.bsuite:BSuite',
+      'dummy': 'dreamerv3.embodied.envs.dummy:Dummy',
+      'gym': 'dreamerv3.embodied.envs.from_gym:FromGym',
+      'gymnasium': 'dreamerv3.embodied.envs.from_gymnasium:FromGymnasium',
+      'dm': 'dreamerv3.embodied.envs.from_dmenv:FromDM',
+      'crafter': 'dreamerv3.embodied.envs.crafter:Crafter',
+      'dmc': 'dreamerv3.embodied.envs.dmc:DMC',
+      'atari': 'dreamerv3.embodied.envs.atari:Atari',
+      'atari100k': 'dreamerv3.embodied.envs.atari:Atari',
+      'dmlab': 'dreamerv3.embodied.envs.dmlab:DMLab',
+      'minecraft': 'dreamerv3.embodied.envs.minecraft:Minecraft',
+      'loconav': 'dreamerv3.embodied.envs.loconav:LocoNav',
+      'pinpad': 'dreamerv3.embodied.envs.pinpad:PinPad',
+      'langroom': 'dreamerv3.embodied.envs.langroom:LangRoom',
+      'procgen': 'dreamerv3.embodied.envs.procgen:ProcGen',
+      'bsuite': 'dreamerv3.embodied.envs.bsuite:BSuite',
       'memmaze': lambda task, **kw: from_gym.FromGym(
           f'MemoryMaze-{task}-ExtraObs-v0', **kw),
   }[suite]
@@ -215,9 +217,12 @@ def make_env(config, index, **overrides):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)
     ctor = getattr(module, cls)
-  kwargs = config.env.get(suite, {})
+  if config.env.kwargs != "{}":
+      kwargs = yaml.YAML(typ="safe").load(config.env.kwargs)
+  else:
+      kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
-  if kwargs.pop('use_seed', False):
+  if kwargs.pop('use_seed', False) or suite == "gymnasium":
     kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = embodied.Path(config.logdir) / f'env{index}'
