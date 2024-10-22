@@ -7,10 +7,8 @@ defaults:
   eval_dir: ''
   filter: 'score|length|fps|ratio|train/.*_loss$|train/rand/.*/mean'
   tensorboard_videos: True
-  wandb:
-    project: powm
-    group: ''
-    name: ''
+  wandb: {project: '', group: '', name: ''}
+
 
   replay:
     size: 5e6
@@ -48,8 +46,10 @@ defaults:
     num_envs: 16
     num_envs_eval: 4
     expl_until: 0
+    log_units: seconds # seconds/steps
     log_every: 120
     save_every: 900
+    save_each_ckpt: False
     eval_every: 180
     eval_initial: True
     eval_eps: 1
@@ -88,6 +88,7 @@ defaults:
     dmc: {size: [64, 64], repeat: 2, image: True, camera: -1}
     procgen: {size: [64, 64]}
     loconav: {size: [64, 64], repeat: 2, camera: -1}
+    kwargs: '{}'
 
   # Agent
   report: True
@@ -95,7 +96,7 @@ defaults:
   batch_size: 16
   batch_length: 65
   batch_length_eval: 33
-  wm_prediction_error_window: 10
+  wm_prediction_error_window: 5
   replay_length: 0
   replay_length_eval: 0
   replay_context: 1
@@ -129,6 +130,7 @@ defaults:
   contdisc: True
   rssm_loss: {free: 1.0}
   n_particles: 1
+
   # Actor Critic
   actor: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}
   critic: {layers: 3, units: 1024, act: silu, norm: rms, dist: symexp_twohot, outscale: 0.0, inputs: [deter, stoch], winit: normal, bins: 255, block_fans: False, block_norm: False}
@@ -149,6 +151,7 @@ defaults:
   actent: 3e-4
   slowreg: 1.0
   slowtar: False
+
 
 size2m: &size2m
   dyn.rssm: {deter: 1024, hidden: 128, classes: 8}
@@ -180,15 +183,16 @@ multicpu:
     actor_batch: 4
   batch_size: 12
 
+
 mordorhike:
-  <<: *size12m
-  task: mordorhike_medium
+  <<: *size2m
+  task: gymnasium_mordor-hike-medium-v0
   enc.spaces: vector
   dec.spaces: vector
   run:
     train_ratio: 512
     num_envs: 16
-    steps: 1e5
+    steps: 2e5
     save_every: 2e4
     log_every: 1e4
     eval_every: 1e5
@@ -196,6 +200,7 @@ mordorhike:
   jax:
     prealloc: False
   horizon: 100 # discount factor of 0.99
+  wandb.project: 'powm'
 
 debug:
   jax: {debug: True, jit: True, prealloc: False, platform: cpu, compute_dtype: bfloat16, profiler: False, checks: False}

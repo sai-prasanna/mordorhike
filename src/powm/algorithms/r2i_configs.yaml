@@ -14,7 +14,7 @@ defaults:
   eval_dir: ''
   filter: '.*'
   wandb:
-    project: powm
+    project: ''
     group: ''
     name: ''
   jax:
@@ -34,8 +34,10 @@ defaults:
     profile_path: none
     steps: 1e10
     expl_until: 0
+    log_units: seconds # seconds/steps
     log_every: 300
     save_every: 900
+    save_each_ckpt: False
     eval_every: 1e6
     eval_initial: True
     eval_eps: 1
@@ -277,8 +279,7 @@ xlarge:
 
 
 mordorhike:
-
-  task: mordorhike_medium
+  task: gymnasium_mordor-hike-medium-v0
   envs.amount: 16
   run:
     script: train
@@ -303,6 +304,7 @@ mordorhike:
   .*\.cnn_depth: 32
   .*\.layers: 2
   .*\.units: 512
+  wandb.project: 'powm'
 
 multicpu:
 

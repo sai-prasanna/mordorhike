@@ -1,9 +1,11 @@
 {
     "python.analysis.extraPaths": [
-        "third_party/dreamerv3"
+        "third_party/dreamerv3",
+        "third_party/recall2imagine"
     ],
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter"
     },
-    "black-formatter.args": ["--force-exclude", "third_party"]
+    "black-formatter.args": ["--force-exclude", "third_party/**"],
+    "isort.args": ["--force-exclude", "third_party/**"]
 }
