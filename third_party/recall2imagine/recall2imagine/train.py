@@ -105,7 +105,7 @@ def main(argv=None):
       assert config.run.actor_batch <= config.envs.amount, (
           config.run.actor_batch, config.envs.amount)
       step = embodied.Counter()
-      env = make_env(config)
+      env = make_env(config, 0)
       agent = agt.Agent(env.obs_space, env.act_space, step, config)
       env.close()
       if config.replay != 'lfs':
@@ -173,7 +173,7 @@ def make_envs(config, **overrides):
   suite, task = config.task.split('_', 1)
   ctors = []
   for index in range(config.envs.amount):
-    ctor = lambda: make_env(config, **overrides)
+    ctor = lambda i=index: make_env(config, i, **overrides)
     if config.envs.parallel != 'none':
       ctor = bind(embodied.Parallel, ctor, config.envs.parallel)
     if config.envs.restart:
@@ -183,7 +183,7 @@ def make_envs(config, **overrides):
   return embodied.BatchEnv(envs, parallel=(config.envs.parallel != 'none'))
 
 
-def make_env(config, **overrides):
+def make_env(config, index, **overrides):
   # You can add custom environments by creating and returning the environment
   # instance here. Environments with different interfaces can be converted
   # using `embodied.envs.from_gym.FromGym` and `embodied.envs.from_dm.FromDM`.
@@ -191,6 +191,7 @@ def make_env(config, **overrides):
   ctor = {
       'dummy': 'recall2imagine.embodied.envs.dummy:Dummy',
       'gym': 'recall2imagine.embodied.envs.from_gym:FromGym',
+      'gymnasium': 'recall2imagine.embodied.envs.from_gymnasium:FromGymnasium',
       'dm': 'recall2imagine.embodied.envs.from_dm:FromDM',
       'crafter': 'recall2imagine.embodied.envs.crafter:Crafter',
       'dmc': 'recall2imagine.embodied.envs.dmc:DMC',
@@ -209,6 +210,9 @@ def make_env(config, **overrides):
   else:
     kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
+  if suite == "gymnasium":
+    # TODO: fix seeding for other suites
+    kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
   env = ctor(task, **kwargs)
   return wrap_env(env, config)
 

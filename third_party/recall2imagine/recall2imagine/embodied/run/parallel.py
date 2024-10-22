@@ -153,6 +153,9 @@ def learner(step, agent, replay, logger, timer, args):
     if should_save():
       try:
         checkpoint.save()
+        if args.save_each_ckpt:
+          timestamped_path = logdir / f"checkpoint_{logger.step.value}.ckpt"
+          checkpoint.save(timestamped_path)
       except:
         print('saving failed')
         pass

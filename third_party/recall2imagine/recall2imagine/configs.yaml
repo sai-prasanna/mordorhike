@@ -32,8 +32,10 @@ defaults:
     profile_path: none
     steps: 1e10
     expl_until: 0
+    log_units: seconds # seconds/steps
     log_every: 300
     save_every: 900
+    save_each_ckpt: False
     eval_every: 1e6
     eval_initial: True
     eval_eps: 1
