@@ -94,6 +94,7 @@ defaults:
   batch_size: 16
   batch_length: 65
   batch_length_eval: 33
+  wm_prediction_error_window: 5
   replay_length: 0
   replay_length_eval: 0
   replay_context: 1
@@ -126,6 +127,7 @@ defaults:
   conhead: {layers: 1, units: 1024, act: silu, norm: rms, dist: binary, outscale: 1.0, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}
   contdisc: True
   rssm_loss: {free: 1.0}
+  n_particles: 1
 
   # Actor Critic
   actor: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}
