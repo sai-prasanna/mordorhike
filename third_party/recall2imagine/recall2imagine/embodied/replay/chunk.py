@@ -1,9 +1,10 @@
 import io
 from datetime import datetime
 
-import embodied
 import numpy as np
 import uuid as uuidlib
+
+from recall2imagine import embodied
 
 
 class Chunk:

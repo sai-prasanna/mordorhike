@@ -1,7 +1,7 @@
-import embodied
 import jax
 import jax.numpy as jnp
 import ruamel.yaml as yaml
+
 tree_map = jax.tree_util.tree_map
 sg = lambda x: tree_map(jax.lax.stop_gradient, x)
 
@@ -13,6 +13,7 @@ class CheckTypesFilter(logging.Filter):
 logger.addFilter(CheckTypesFilter())
 
 from . import behaviors
+from . import embodied
 from . import jaxagent
 from . import jaxutils
 from . import nets

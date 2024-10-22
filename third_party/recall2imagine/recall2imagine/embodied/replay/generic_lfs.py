@@ -5,7 +5,6 @@ from collections import defaultdict, deque
 from functools import partial as bind
 import pickle
 
-import embodied
 import bz2
 import numpy as np
 import io
@@ -15,6 +14,7 @@ from . import selectors, limiters
 from .lfs_manager import LFSManager
 from . import selectors
 from .chunk import Chunk, ChunkSerializer
+from recall2imagine import embodied
 
 class FIFO_LFS:
   """

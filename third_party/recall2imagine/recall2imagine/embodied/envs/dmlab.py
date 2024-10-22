@@ -1,6 +1,6 @@
-import embodied
 import numpy as np
 
+from recall2imagine import embodied
 
 class DMLab(embodied.Env):
 

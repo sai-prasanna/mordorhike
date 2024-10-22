@@ -1,6 +1,6 @@
 import os
 
-import embodied
+from recall2imagine import embodied
 
 
 class RoboDesk(embodied.Env):

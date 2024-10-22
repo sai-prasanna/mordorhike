@@ -1,8 +1,9 @@
 import functools
 import os
 
-import embodied
 import numpy as np
+
+from recall2imagine import embodied
 
 
 class FromDM(embodied.Env):

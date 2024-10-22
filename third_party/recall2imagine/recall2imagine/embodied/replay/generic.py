@@ -2,10 +2,10 @@ import time
 from collections import defaultdict, deque
 from functools import partial as bind
 
-import embodied
 import numpy as np
 
 from . import saver
+from recall2imagine import embodied
 
 
 class Generic:

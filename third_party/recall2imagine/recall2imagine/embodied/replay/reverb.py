@@ -2,9 +2,9 @@ import pickle
 from collections import defaultdict
 from functools import partial as bind
 
-import embodied
 import numpy as np
 
+from recall2imagine import embodied
 
 class Reverb:
 

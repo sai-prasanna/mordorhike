@@ -23,8 +23,8 @@ sys.path.append(str(directory.parent.parent))
 sys.path.append(str(directory.parent.parent.parent))
 __package__ = directory.name
 
-import embodied
-from embodied import wrappers
+from . import embodied
+from .embodied import wrappers
 
 
 def main(argv=None):
@@ -189,16 +189,16 @@ def make_env(config, **overrides):
   # using `embodied.envs.from_gym.FromGym` and `embodied.envs.from_dm.FromDM`.
   suite, task = config.task.split('_', 1)
   ctor = {
-      'dummy': 'embodied.envs.dummy:Dummy',
-      'gym': 'embodied.envs.from_gym:FromGym',
-      'dm': 'embodied.envs.from_dm:FromDM',
-      'crafter': 'embodied.envs.crafter:Crafter',
-      'dmc': 'embodied.envs.dmc:DMC',
-      'atari': 'embodied.envs.atari:Atari',
-      'dmlab': 'embodied.envs.dmlab:DMLab',
-      'minecraft': 'embodied.envs.minecraft:Minecraft',
-      'loconav': 'embodied.envs.loconav:LocoNav',
-      'pinpad': 'embodied.envs.pinpad:PinPad',
+      'dummy': 'recall2imagine.embodied.envs.dummy:Dummy',
+      'gym': 'recall2imagine.embodied.envs.from_gym:FromGym',
+      'dm': 'recall2imagine.embodied.envs.from_dm:FromDM',
+      'crafter': 'recall2imagine.embodied.envs.crafter:Crafter',
+      'dmc': 'recall2imagine.embodied.envs.dmc:DMC',
+      'atari': 'recall2imagine.embodied.envs.atari:Atari',
+      'dmlab': 'recall2imagine.embodied.envs.dmlab:DMLab',
+      'minecraft': 'recall2imagine.embodied.envs.minecraft:Minecraft',
+      'loconav': 'recall2imagine.embodied.envs.loconav:LocoNav',
+      'pinpad': 'recall2imagine.embodied.envs.pinpad:PinPad',
   }[suite]
   if isinstance(ctor, str):
     module, cls = ctor.split(':')

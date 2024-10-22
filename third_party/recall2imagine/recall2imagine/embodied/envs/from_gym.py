@@ -1,9 +1,10 @@
 import functools
 
-import embodied
 import gym
 import gymnasium as gym_
 import numpy as np
+
+from recall2imagine import embodied
 
 def flatten(space, onehot=False):
   if isinstance(space, gym_.spaces.Discrete):

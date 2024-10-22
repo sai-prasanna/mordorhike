@@ -4,9 +4,9 @@ import logging
 import threading
 from collections import defaultdict
 
-import embodied
 import numpy as np
 
+from recall2imagine import embodied
 
 def parallel(agent, replay, logger, make_env, num_envs, args):
   step = logger.step

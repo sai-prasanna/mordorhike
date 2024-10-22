@@ -1,9 +1,9 @@
 import re
 
-import embodied
 import numpy as np
 import jax
 
+from recall2imagine import embodied
 
 def train(agent, env, replay, logger, args, config):
 

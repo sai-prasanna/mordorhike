@@ -2,9 +2,9 @@ import io
 import re
 from datetime import datetime
 
-import embodied
 import numpy as np
 
+from recall2imagine import embodied
 
 def train_save(agent, env, replay, logger, args):
 

@@ -4,9 +4,10 @@ from collections import defaultdict, deque
 from functools import partial as bind
 import numpy as np
 from tqdm import tqdm
-import embodied
+
 
 from . import chunk as chunklib
+from recall2imagine import embodied
 
 
 class Saver:

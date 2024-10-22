@@ -1,8 +1,8 @@
 import re
 
-import embodied
 import numpy as np
 
+from recall2imagine import embodied
 
 def train_holdout(agent, env, train_replay, eval_replay, logger, args):
 

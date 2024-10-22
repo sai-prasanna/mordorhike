@@ -6,8 +6,8 @@ from collections import deque, defaultdict
 from functools import partial as bind
 
 import numpy as np
-import embodied
 
+from recall2imagine import embodied
 from . import chunk as chunklib
 
 

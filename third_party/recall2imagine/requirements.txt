@@ -1,0 +1,36 @@
+jax[cuda12_pip]
+jaxlib
+optax
+tensorflow_probability
+dm-haiku
+optax
+yacs
+tensorflow-cpu
+ruamel.yaml
+ruamel.yaml.clib
+moviepy
+imageio
+numpy
+opt_einsum
+einops
+gym
+gymnasium
+flax
+dm-haiku
+protobuf
+gast
+zmq
+rich
+msgpack
+cloudpickle
+opencv-python
+# crafter
+# dm-control
+# mujoco
+# robodesk
+# bsuite
+# memory-maze
+# popgym
+# mazelib
+# procgen
+# atari-py
