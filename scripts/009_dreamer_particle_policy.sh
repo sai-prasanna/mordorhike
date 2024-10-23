@@ -22,7 +22,7 @@ if [ $SLURM_ARRAY_TASK_ID -eq 0 ]; then
     logdir="experiments/mordor_hike/009_dreamer_particle_policy/42"
     uv run train-dreamer --logdir $logdir --configs mordorhike size2m --run.steps 5e5 --run.save_every 1e5  --run.eval_every 1e5  --seed 42 --run.train_ratio 512  --task mordorhike_hard --n_particles 4
     uv run eval-dreamer --logdir $logdir
-    uv run eval-dreamer --logdir $logdir --mine_deep_set_size 256 --wandb.name"42_big_ds"
+    uv run eval-dreamer --logdir $logdir --mine_deep_set_size 256 --wandb.name "42_big_ds"
 elif [ $SLURM_ARRAY_TASK_ID -eq 1 ]; then
     logdir="experiments/mordor_hike/009_dreamer_particle_policy/1337"
     uv run train-dreamer --logdir $logdir --configs mordorhike size2m --run.steps 5e5 --run.save_every 1e5  --run.eval_every 1e5  --seed 1337 --run.train_ratio 512  --task mordorhike_hard --n_particles 4 
