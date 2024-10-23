@@ -287,6 +287,7 @@ mordorhike:
     save_every: 1e5
     log_every: 1e4
     eval_every: 1e5
+    log_units: steps
     log_keys_video: [log_image]
     train_ratio: 512
   actor.inputs: [stoch, hidden]
