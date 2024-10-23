@@ -197,10 +197,13 @@ mordorhike:
     log_every: 1e4
     eval_every: 1e5
     log_keys_video: [log_image]
+    save_each_ckpt: True
+    log_units: steps
   jax:
     prealloc: False
   horizon: 100 # discount factor of 0.99
   wandb.project: 'powm'
+  
 
 debug:
   jax: {debug: True, jit: True, prealloc: False, platform: cpu, compute_dtype: bfloat16, profiler: False, checks: False}

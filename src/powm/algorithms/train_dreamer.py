@@ -7,6 +7,7 @@ from dreamerv3 import embodied
 from dreamerv3.main import make_env, make_agent, make_replay
 from dreamerv3.embodied.run.train import train
 from dreamerv3.embodied.core.logger import AsyncOutput, _encode_gif
+import powm.envs
 
 warnings.filterwarnings("ignore", ".*truncated to dtype int32.*")
 
@@ -140,6 +141,6 @@ def main(argv=None):
 
 if __name__ == "__main__":
     # main(
-    #     argv="--configs mordorhike size2m --run.steps 5e5 --run.save_every 1e5  --run.eval_every 1e5  --seed 42 --run.train_ratio 512  --task mordorhike_hard --n_particles 4 --logdir ./test --wandb.project ''".split()
+    #     argv="--configs mordorhike size2m --run.steps 5e5 --run.save_every 1e5  --run.eval_every 1e5  --seed 42 --logdir ./test1 --wandb.project".split() + [""]
     # )
     main()
