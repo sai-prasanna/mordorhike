@@ -2,7 +2,7 @@
 
 #SBATCH --array=2-2
 #SBATCH --partition alldlc_gpu-rtx2080
-#SBATCH --job-name 014_r2i_default
+#SBATCH --job-name 014_r2i_large
 #SBATCH --output experiments/slurm/%x-%A-%a.out
 #SBATCH --error experiments/slurm/%x-%A-%a.err
 #SBATCH --mem 16GB
@@ -22,7 +22,7 @@ seeds=(42 1337 13)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
-uv run train-r2i --logdir $logdir --configs mordorhike --seed $seed
+uv run train-r2i --logdir $logdir --configs mordorhike r2i_large --seed $seed
 end=`date +%s`
 echo "Finished at $(date)";
 echo "Time taken: $((end-start)) seconds";

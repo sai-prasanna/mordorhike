@@ -277,6 +277,16 @@ xlarge:
   .*\.mlp_layers: 5
   .*\.layers: 5
 
+r2i_large:
+  # copied from memory maze
+  rssm.deter: 2048
+  rssm.units: 1024
+  .*\.cnn_depth: 48
+  .*\.mlp_units: 400
+  .*\.layers: 4
+  .*\.mlp_layers: 4
+  ssm.n_layers: 5
+  rssm.hidden: 512
 
 mordorhike:
   task: gymnasium_mordor-hike-medium-v0
