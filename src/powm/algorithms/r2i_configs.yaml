@@ -290,22 +290,15 @@ mordorhike:
     log_units: steps
     log_keys_video: [log_image]
     train_ratio: 512
-  actor.inputs: [stoch, hidden]
-  critic.inputs: [stoch, hidden]
   encoder: {mlp_keys: 'vector', cnn_keys: '$^'}
   decoder: {mlp_keys: 'vector', cnn_keys: '$^'}
-  rssm.deter: 1024
-  encoder.mlp_layers: 1
-  decoder.mlp_layers: 1
-  encoder.mlp_units: 512
-  decoder.mlp_units: 512
   horizon: 100
-  ssm.n_layers: 3
-  rssm.units: 1024
+  rssm.deter: 512
   .*\.cnn_depth: 32
   .*\.layers: 2
   .*\.units: 512
   wandb.project: 'powm'
+  replay_size: 5e5
 
 multicpu:
 

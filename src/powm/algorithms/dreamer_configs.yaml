@@ -192,9 +192,9 @@ mordorhike:
   run:
     train_ratio: 512
     num_envs: 16
-    steps: 2e5
-    save_every: 2e4
-    log_every: 1e4
+    steps: 5e5
+    save_every: 1e5
+    log_every: 2e4
     eval_every: 1e5
     log_keys_video: [log_image]
     save_each_ckpt: True
