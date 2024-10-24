@@ -139,6 +139,7 @@ class Agent(nj.Module):
     self.config.jax.jit and embodied.print(
         'Tracing policy function', color='yellow')
     prevlats, prevact = carry
+    batch_size = obs['is_first'].shape[0]
     obs = self.preprocess(obs)
     embed = self.enc(obs, bdims=1)
     prevact = jaxutils.onehot_dict(prevact, self.act_space)
@@ -148,36 +149,37 @@ class Agent(nj.Module):
           bdims=1,
           sample=(mode == "train" or self.config.n_particles > 1))
       post_dist = self.dyn._dist(post_out['logit'])
-      post_proposal_likelihood = post_dist.log_prob(prevlat['stoch'])
-      _, prior_out = self.dyn.imagine(post_lat, prevact, bdims=1)
-      prior_dist = self.dyn._dist(prior_out['logit'])
-      dynamics_likelihood = prior_dist.log_prob(post_lat['stoch'])
-      dists = self.dec(post_out, bdims=1)
-      obs_likelihood = jnp.sum(jnp.array([v.log_prob(obs[k].astype(f32)) for k, v in dists.items()]), axis=0)
-      log_weight = obs_likelihood + dynamics_likelihood - post_proposal_likelihood
-      weight = jnp.exp(log_weight)
+      if self.config.n_particles > 1:
+        # compute weights for each particle
+        post_proposal_likelihood = post_dist.log_prob(post_lat['stoch'])
+        _, prior_out = self.dyn.imagine(prevlat, prevact, bdims=1)
+        prior_dist = self.dyn._dist(prior_out['logit'])
+        dynamics_likelihood = prior_dist.log_prob(post_lat['stoch'])
+        dists = self.dec(post_out, bdims=1)
+        obs_likelihood = jnp.sum(jnp.array([v.log_prob(obs[k].astype(f32)) for k, v in dists.items()]), axis=0)
+        log_weight = obs_likelihood + dynamics_likelihood - post_proposal_likelihood
+        weight = jnp.exp(log_weight)
+      else:
+        weight = jnp.ones((batch_size,))
       return post_lat, post_out, weight
     
     particle_lats, particle_outs, particle_weights = jax.vmap(filter_step, in_axes=1, out_axes=1)(prevlats)
-    # resample particles
-    particle_weights = particle_weights / jnp.sum(particle_weights, axis=1, keepdims=True)
-
-
-    particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x))(particle_weights)
-    # Index particles for each batch element
-    batch_size = particle_inds.shape[0]
-    batch_indices = jnp.arange(batch_size)[:, None]
-
-    particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
-    particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
-    particle_acts = []
-    for i in range(self.config.n_particles):
-      # Always sample actions as our policy is stochastic
-      act = sample(self.actor({k: v[:, i] for k, v in particle_outs.items()}, bdims=1))
-      particle_acts.append(act)
-    particle_acts = {k: jnp.stack([particle_acts[i][k] for i in range(self.config.n_particles)], axis=1) for k in particle_acts[0]}
-    # Assume all actions are discrete, sum and argmax
-    act = {k: jnp.argmax(jnp.sum(particle_acts[k], axis=1), axis=-1) for k in particle_acts}
+    if self.config.n_particles > 1:
+      # resample particles
+      particle_weights = particle_weights / jnp.sum(particle_weights, axis=1, keepdims=True)
+      particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x))(particle_weights)
+      # Index particles for each batch element
+      batch_size = particle_inds.shape[0]
+      batch_indices = jnp.arange(batch_size)[:, None]
+      particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
+      particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
+      particle_act_dists = []
+      # randomly choose a particle to sample actions from
+      action_idx = jax.random.randint(nj.seed(), (batch_size,), 0, self.config.n_particles)
+    else:
+      action_idx = jnp.zeros((batch_size,), dtype=jnp.int32)
+    particle_out = treemap(lambda v: v[jnp.arange(batch_size), action_idx], particle_outs)
+    act = sample(self.actor(particle_out, bdims=1))
     outs = {}
     if self.config.replay_context:
       outs.update({k: particle_outs[k] for k in self.aux_spaces if k != 'stepid'})
