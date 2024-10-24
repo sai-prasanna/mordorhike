@@ -392,12 +392,14 @@ class MLP(nj.Module):
     forbidden = ('binit', 'norm', 'act')
     self.dkw = {k: v for k, v in kw.items() if k not in forbidden}
 
-  def __call__(self, inputs, bdims=2, training=False):
+  def __call__(self, inputs, bdims=2, deepset_dim=None, training=False):
     feat = self.inputs(inputs, bdims, jaxutils.COMPUTE_DTYPE)
     x = feat.reshape([-1, feat.shape[-1]])
     for i in range(self.layers):
       x = self.get(f'h{i}', Linear, self.units, **self.lkw)(x)
     x = x.reshape((*feat.shape[:bdims], -1))
+    if deepset_dim is not None:
+      x = x.sum(axis=deepset_dim)
     if self.shape is None:
       return x
     elif isinstance(self.shape, dict):
