@@ -173,7 +173,6 @@ class Agent(nj.Module):
       batch_indices = jnp.arange(batch_size)[:, None]
       particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
       particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
-      particle_act_dists = []
       # randomly choose a particle to sample actions from
       action_idx = jax.random.randint(nj.seed(), (batch_size,), 0, self.config.n_particles)
     else:
@@ -199,6 +198,9 @@ class Agent(nj.Module):
         k in outs for k in self.aux_spaces
         if k not in ('stepid', 'finite', 'is_online')), (
               list(outs.keys()), self.aux_spaces)
+    act = {
+      k: jnp.nanargmax(act[k], -1).astype(jnp.int32)
+      if s.discrete else act[k] for k, s in self.act_space.items()}
     return act, outs, (particle_lats, act)
  
   def train(self, data, carry):
