@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --array=2-2
+#SBATCH --array=0-2
 #SBATCH --partition alldlc_gpu-rtx2080
-#SBATCH --job-name 014_r2i_large
+#SBATCH --job-name 017_r2i_large
 #SBATCH --output experiments/slurm/%x-%A-%a.out
 #SBATCH --error experiments/slurm/%x-%A-%a.err
 #SBATCH --mem 16GB

@@ -3,7 +3,7 @@ import pathlib
 import sys
 import warnings
 from functools import partial as bind
-import mujoco
+#import mujoco
 import traceback
 import ruamel.yaml as yaml
 import signal

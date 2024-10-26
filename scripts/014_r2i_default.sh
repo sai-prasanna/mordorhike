@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --array=2-2
+#SBATCH --array=1-1
 #SBATCH --partition alldlc_gpu-rtx2080
 #SBATCH --job-name 014_r2i_default
 #SBATCH --output experiments/slurm/%x-%A-%a.out
