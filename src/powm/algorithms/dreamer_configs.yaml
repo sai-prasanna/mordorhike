@@ -130,6 +130,7 @@ defaults:
   contdisc: True
   rssm_loss: {free: 1.0}
   n_particles: 1
+  particle_policy: False
 
   # Actor Critic
   actor: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}

@@ -173,7 +173,15 @@ class Agent(nj.Module):
       batch_indices = jnp.arange(batch_size)[:, None]
       particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
       particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
-    act = sample(self.actor(particle_outs, bdims=2, deepset_dim=1))
+      # randomly choose a particle to sample actions from
+      action_idx = jax.random.randint(nj.seed(), (batch_size,), 0, self.config.n_particles)
+    else:
+      action_idx = jnp.zeros((batch_size,), dtype=jnp.int32)
+    if self.config.particle_policy:
+      act = sample(self.actor(particle_outs, bdims=2, deepset_dim=1))
+    else:
+      particle_sample_out = treemap(lambda v: v[jnp.arange(batch_size), action_idx], particle_outs)
+      act = sample(self.actor(particle_sample_out, bdims=1))
     outs = {}
     if self.config.replay_context:
       outs.update({k: particle_outs[k] for k in self.aux_spaces if k != 'stepid'})
@@ -288,35 +296,56 @@ class Agent(nj.Module):
     dynlosses, mets = self.dyn.loss(outs, **self.config.rssm_loss)
     losses.update(dynlosses)
     metrics.update(mets)
-    replay_outs = p_outs
+    if self.config.particle_policy:
+      replay_outs = p_outs
+    else:
+      replay_outs = outs
 
     # Imagination rollout
     def imgstep(carry, _):
       lat, act = carry
-      lat, out = jax.vmap(lambda p_lat: self.dyn.imagine(p_lat, act, bdims=1), in_axes=1, out_axes=1)(lat)
-      out['stoch'] = sg(out['stoch'])
-      act = cast(sample(self.actor(out, bdims=2, deepset_dim=1)))
+      if self.config.particle_policy:
+        lat, out = jax.vmap(lambda p_lat: self.dyn.imagine(p_lat, act, bdims=1), in_axes=1, out_axes=1)(lat)
+        out['stoch'] = sg(out['stoch'])
+        act = cast(sample(self.actor(out, bdims=2, deepset_dim=1)))
+      else:
+        lat, out = self.dyn.imagine(lat, act, bdims=1)
+        out['stoch'] = sg(out['stoch'])
+        act = cast(sample(self.actor(out, bdims=1)))
       return (lat, act), (out, act)
     rew = data['reward']
     con = 1 - f32(data['is_terminal'])
     if self.config.imag_start == 'all':
       B, T = data['is_first'].shape
-      intermediate = treemap(
+      if self.config.particle_policy:
+        intermediate = treemap(
           lambda x: x.reshape((B * T, self.config.n_particles, 1, *x.shape[3:])), replay_outs)
-      startlat = jax.vmap(self.dyn.outs_to_carry, in_axes=1, out_axes=1)(intermediate)
-      startrew, startcon = treemap(
-          lambda x: x.reshape((B * T, *x.shape[3:])),
-          (rew, con))
-      startout = treemap(lambda x: x.reshape((B * T, self.config.n_particles, *x.shape[3:])), replay_outs)
+        startlat = jax.vmap(self.dyn.outs_to_carry, in_axes=1, out_axes=1)(intermediate)
+        startrew, startcon = treemap(
+            lambda x: x.reshape((B * T, *x.shape[3:])),
+            (rew, con))
+        startout = treemap(lambda x: x.reshape((B * T, self.config.n_particles, *x.shape[3:])), replay_outs)
+      else: 
+        startlat = self.dyn.outs_to_carry(treemap(
+            lambda x: x.reshape((B * T, 1, *x.shape[2:])), replay_outs))
+        startout, startrew, startcon = treemap(
+            lambda x: x.reshape((B * T, *x.shape[2:])),
+            (replay_outs, rew, con))
     elif self.config.imag_start == 'last':
-      startlat = p_newlat
+      if self.config.particle_policy:
+        startlat = p_newlat
+      else:
+        startlat = newlat
       startout, startrew, startcon = treemap(
           lambda x: x[:, -1], (replay_outs, rew, con))
     if self.config.imag_repeat > 1:
       N = self.config.imag_repeat
       startlat, startout, startrew, startcon = treemap(
           lambda x: x.repeat(N, 0), (startlat, startout, startrew, startcon))
-    startact = cast(sample(self.actor(startout, bdims=2, deepset_dim=1)))
+    if self.config.particle_policy:
+      startact = cast(sample(self.actor(startout, bdims=2, deepset_dim=1)))
+    else:
+      startact = cast(sample(self.actor(startout, bdims=1)))
     _, (outs, acts) = jaxutils.scan(
         imgstep, sg((startlat, startact)),
         jnp.arange(self.config.imag_length), self.config.imag_unroll)
@@ -326,19 +355,26 @@ class Agent(nj.Module):
         treemap(lambda x: x[:, None], (startout, startact)), (outs, acts))
 
     # Annotate
-
-
-    rew = jnp.concatenate([startrew[:, None], self.rew(outs, bdims=3).mean().mean(axis=-1)[:, 1:]], 1)
-    con = jnp.concatenate([startcon[:, None], self.con(outs, bdims=3).mean().mean(axis=-1)[:, 1:]], 1)
+    if self.config.particle_policy:
+      rew = jnp.concatenate([startrew[:, None], self.rew(outs, bdims=3).mean().mean(axis=-1)[:, 1:]], 1)
+      con = jnp.concatenate([startcon[:, None], self.con(outs, bdims=3).mean().mean(axis=-1)[:, 1:]], 1)
+    else:
+      rew = jnp.concatenate([startrew[:, None], self.rew(outs).mean()[:, 1:]], 1)
+      con = jnp.concatenate([startcon[:, None], self.con(outs).mean()[:, 1:]], 1)
     acts = sg(acts)
     inp = treemap({
         'none': lambda x: sg(x),
         'first': lambda x: jnp.concatenate([x[:, :1], sg(x[:, 1:])], 1),
         'all': lambda x: x,
     }[self.config.ac_grads], outs)
-    actor = self.actor(inp, bdims=3, deepset_dim=2)
-    critic = self.critic(inp, bdims=3, deepset_dim=2)
-    slowcritic = self.slowcritic(inp, bdims=3, deepset_dim=2)
+    if self.config.particle_policy:
+      actor = self.actor(inp, bdims=3, deepset_dim=2)
+      critic = self.critic(inp, bdims=3, deepset_dim=2)
+      slowcritic = self.slowcritic(inp, bdims=3, deepset_dim=2)
+    else:
+      actor = self.actor(inp)
+      critic = self.critic(inp)
+      slowcritic = self.slowcritic(inp)
     voffset, vscale = self.valnorm.stats()
     val = critic.mean() * vscale + voffset
     slowval = slowcritic.mean() * vscale + voffset
@@ -375,9 +411,14 @@ class Agent(nj.Module):
         self.config.slowreg * critic.log_prob(sg(slowcritic.mean())))[:, :-1]
 
     if self.config.replay_critic_loss:
-      replay_critic = self.critic(
+      if self.config.particle_policy:
+        replay_critic = self.critic(
           replay_outs if self.config.replay_critic_grad else sg(replay_outs), bdims=3, deepset_dim=2)
-      replay_slowcritic = self.slowcritic(replay_outs, bdims=3, deepset_dim=2)
+        replay_slowcritic = self.slowcritic(replay_outs, bdims=3, deepset_dim=2)
+      else:
+        replay_critic = self.critic(
+            replay_outs if self.config.replay_critic_grad else sg(replay_outs))
+        replay_slowcritic = self.slowcritic(replay_outs)
       boot = dict(
           imag=ret[:, 0].reshape(data['reward'].shape),
           critic=replay_critic.mean(),
@@ -439,7 +480,7 @@ class Agent(nj.Module):
     losses = {k: v * self.scales[k] for k, v in losses.items()}
     loss = jnp.stack([v.mean() for k, v in losses.items()]).sum()
     newact = {k: data[k][:, -1] for k in self.act_space}
-    outs = {'replay_outs': replay_outs, 'prevacts': prevacts, 'embed': embed}
+    outs = {'replay_outs': p_outs, 'prevacts': prevacts, 'embed': embed}
     outs.update({f'{k}_loss': v for k, v in losses.items()})
     carry = (p_newlat, newact)
     return loss, (outs, carry, metrics)
