@@ -1273,6 +1273,20 @@ wheels = [
 ]
 
 [[package]]
+name = "pomdp-py"
+version = "1.3.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "python_full_version >= '3.12'" },
+    { name = "scipy", marker = "python_full_version >= '3.12'" },
+    { name = "tqdm", marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/16/c894dc0642f6178c57b8a78914ba77837c75b8beb083f5b1055d63bd50e1/pomdp-py-1.3.5.1.tar.gz", hash = "sha256:4848375bc46b748381188289f0b1782006aed4709ce8523b1a3bb3d85cf13144", size = 115846 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/2b/282c9688d20317549cc477defa670c87760bfc1154c2f4cb64830576efc0/pomdp_py-1.3.5.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8533fd7775936aebb8832a47a97625a1823beda3020b9914a000f98fe80a08df", size = 5539954 },
+]
+
+[[package]]
 name = "powm"
 version = "0.1.0"
 source = { editable = "." }
@@ -1281,6 +1295,7 @@ dependencies = [
     { name = "gymnasium", marker = "python_full_version >= '3.12'" },
     { name = "matplotlib", marker = "python_full_version >= '3.12'" },
     { name = "opencv-python", marker = "python_full_version >= '3.12'" },
+    { name = "pomdp-py", marker = "python_full_version >= '3.12'" },
     { name = "recall2imagine", marker = "python_full_version >= '3.12'" },
     { name = "torch", marker = "python_full_version >= '3.12'" },
     { name = "wandb", extra = ["media"], marker = "python_full_version >= '3.12'" },
@@ -1292,6 +1307,7 @@ requires-dist = [
     { name = "gymnasium", specifier = ">=0.29" },
     { name = "matplotlib", specifier = ">=3.9.2" },
     { name = "opencv-python", specifier = ">=4.10.0.84" },
+    { name = "pomdp-py", specifier = ">=1.3.5.1" },
     { name = "recall2imagine", editable = "third_party/recall2imagine" },
     { name = "torch", specifier = ">=2.4.1" },
     { name = "wandb", extras = ["media", "video"], specifier = ">=0.18.3" },
