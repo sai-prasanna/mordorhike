@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --array=0-0
+#SBATCH --array=0-2
 #SBATCH --partition alldlc_gpu-rtx2080
-#SBATCH --job-name 020_dreamer_particle_policy
+#SBATCH --job-name 024_dreamer_default_smol
 #SBATCH --output experiments/slurm/%x-%A-%a.out
 #SBATCH --error experiments/slurm/%x-%A-%a.err
-#SBATCH --mem 32GB
+#SBATCH --mem 16GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks-per-core=1
@@ -14,14 +14,14 @@
 echo "Workingdir: $PWD";
 echo "Started at $(date)";
 
-# Runing experiment with particle policy where actor-critic is still trained on one particle in imagination.
+
 start=`date +%s`
 export OMP_NUM_THREADS=1
 seeds=(42 1337 13)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
-uv run train-dreamer --logdir $logdir --configs mordorhike --seed $seed --n_particles 10 --particle_policy True
+uv run train-dreamer --logdir $logdir --configs mordorhike sizesmol --seed $seed
 end=`date +%s`
 echo "Finished at $(date)";
 echo "Time taken: $((end-start)) seconds";

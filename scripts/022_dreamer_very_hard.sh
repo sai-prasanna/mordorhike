@@ -21,7 +21,7 @@ seeds=(42 1337 13)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
-uv run train-dreamer --logdir $logdir --configs mordorhike --seed $seed --n_particles 1 --task gymnasium_mordor-hike-very-hard-v0
+uv run train-dreamer --logdir $logdir --configs mordorhike --seed $seed --n_particles 1 --task gymnasium_mordor-hike-veryhard-v0
 end=`date +%s`
 echo "Finished at $(date)";
 echo "Time taken: $((end-start)) seconds";
