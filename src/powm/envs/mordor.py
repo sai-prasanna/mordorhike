@@ -25,10 +25,10 @@ class MordorHike(gym.Env):
         return cls(occlude_dims=(0, 1), start_distribution="uniform", **kwargs)
 
     @classmethod
-    def very_hard(cls, **kwargs):
+    def veryhard(cls, **kwargs):
         return cls(
             occlude_dims=(0, 1),
-            start_distribution="uniform",
+            start_distribution="rotation",
             lateral_action="rotate",
             **kwargs,
         )

@@ -13,7 +13,7 @@ gym.register(
         ),
     ),
 )
-for difficulty in ["easy", "medium", "hard"]:
+for difficulty in ["easy", "medium", "hard", "veryhard"]:
     gym.register(
         f"mordor-hike-{difficulty}-v0",
         entry_point=getattr(MordorHike, difficulty),
