@@ -1,9 +1,15 @@
-# import Pkg
+import Pkg
 # Pkg.add("POMDPs")
 # Pkg.add("POMCPOW")
 # Pkg.add("POMDPModels")
 # Pkg.add("POMDPTools")
 # Pkg.add("Distributions")
+# Pkg.add("Images")
+# Pkg.add("ImageView")
+# Pkg.add("TestImages")
+# Pkg.add("Colors")
+# Pkg.add("GLMakie")
+# Pkg.add("ImageDraw")
 import POMDPs
 import POMDPModels
 import Distributions
@@ -12,19 +18,28 @@ using POMDPs
 using POMCPOW
 using POMDPModels
 using POMDPTools
-using POMDPs
-using POMDPTools
 using LinearAlgebra
 using Distributions
 using Random
 using Distributions: VonMises
+
+
+using Images
+using ImageView
+using TestImages
+using Colors
+using GLMakie
+using ImageDraw
+using GLMakie.GLFW
+using GLMakie: Axis, Figure, to_native, display
+using ImageDraw: Point, LineSegment, CirclePointRadius
 
 @enum LateralAction strafe rotate
 
 
 
 # Update the struct definition to include new fields
-mutable struct MordorHikePOMDP <: POMDP{Vector{Float64}, Int64, Float64}
+mutable struct MordorHikePOMDP <: POMDP{Vector{Float64}, Int64, Vector{Float64}}
     # Constants
     translate_step::Float64
     translate_std::Float64
@@ -44,6 +59,7 @@ mutable struct MordorHikePOMDP <: POMDP{Vector{Float64}, Int64, Float64}
     mvn_3::MvNormal
 
     # New fields
+    occlude_dims::Tuple{Int, Int}
     start_distribution::String
     lateral_action::LateralAction
     rotate_step::Float64
@@ -77,6 +93,7 @@ mutable struct MordorHikePOMDP <: POMDP{Vector{Float64}, Int64, Float64}
             MvNormal([0.0, 0.0], [0.005 0.0; 0.0 1.0]),    # mvn_1
             MvNormal([0.0, -0.8], [1.0 0.0; 0.0 0.01]),    # mvn_2
             MvNormal([0.0, 0.8], [1.0 0.0; 0.0 0.01]),     # mvn_3
+            occlude_dims,         # occlude_dims
             start_distribution,    # start_distribution
             lateral_action,        # lateral_action
             rotate_step,          # rotate_step
@@ -116,7 +133,7 @@ end
 
 function POMDPs.reward(pomdp::MordorHikePOMDP, s::Vector{Float64}, a::Int64, sp::Vector{Float64})
     if isterminal(pomdp, s)
-        0.0
+        return 0.0
     else
         return calculate_altitude(pomdp, sp[1:2])
     end
@@ -203,8 +220,18 @@ end
 
 
 function POMDPs.observation(pomdp::MordorHikePOMDP, a::Int64, sp::Vector{Float64})
-    altitude = calculate_altitude(pomdp, sp[1:2])
-    return Normal(altitude, pomdp.obs_std)
+    # Create full observation
+    position = sp[1:2]
+    altitude = calculate_altitude(pomdp, position)
+    full_obs = vcat(position, altitude)
+    
+    # Apply noise
+    full_obs += rand(Normal(0, pomdp.obs_std), length(full_obs))
+    
+    # Occlude dimensions
+    obs = deleteat!(copy(full_obs), collect(pomdp.occlude_dims))
+    
+    return MvNormal(obs, Matrix(I, length(obs), length(obs)) * pomdp.obs_std)
 end
 
 function POMDPs.observation(pomdp::MordorHikePOMDP, s::Vector{Float64}, a::Int64, sp::Vector{Float64})
@@ -293,14 +320,166 @@ function MordorHikePOMDP(::Val{:veryhard}; kwargs...)
     )
 end
 
+function world_to_pixel(pomdp::MordorHikePOMDP, coord::Vector{Float64}, render_size::Tuple{Int,Int})
+    x = round(Int, (coord[1] - pomdp.map_lower_bound[1]) / 
+        (pomdp.map_upper_bound[1] - pomdp.map_lower_bound[1]) * render_size[2])
+    
+    # Flip y-axis for image coordinates
+    y = round(Int, (1 - (coord[2] - pomdp.map_lower_bound[2]) / 
+        (pomdp.map_upper_bound[2] - pomdp.map_lower_bound[2])) * render_size[1])
+    
+    return [x, y]
+end
+
+function create_background(pomdp::MordorHikePOMDP, render_size::Tuple{Int,Int})
+    height, width = render_size
+    x = range(pomdp.map_lower_bound[1], pomdp.map_upper_bound[1], length=width)
+    y = range(pomdp.map_lower_bound[1], pomdp.map_upper_bound[1], length=height)
+    
+    Z = zeros(height, width)
+    for i in 1:height, j in 1:width
+        pos = [x[j], y[i]]
+        Z[i,j] = calculate_altitude(pomdp, pos)
+    end
+    
+    # Normalize Z to 0-1 range
+    Z_norm = (Z .- minimum(Z)) ./ (maximum(Z) - minimum(Z))
+    
+    # Create color map using viridis-like colors
+    img = RGB.(Z_norm, Z_norm, 1 .- Z_norm)
+    
+    return img
+end
+
+function render(pomdp::MordorHikePOMDP, s::Vector{Float64}; 
+    render_size::Tuple{Int,Int}=(128,128), path::Vector{Vector{Float64}}=Vector{Vector{Float64}}())
+    
+    # Create background if not cached
+    if !@isdefined(background)
+        background = create_background(pomdp, render_size)
+    end
+    
+    # Create a copy of the background to draw on
+    img = copy(background)
+    
+    # Draw path
+    if length(path) > 1
+        for i in 2:length(path)
+            p1 = world_to_pixel(pomdp, path[i-1], render_size)
+            p2 = world_to_pixel(pomdp, path[i], render_size)
+            # Draw line between p1 and p2 in red
+            draw!(img, LineSegment(Point(round(Int, p1[1]), round(Int, p1[2])), 
+                                 Point(round(Int, p2[1]), round(Int, p2[2]))), 
+                  RGB{Float64}(1,0,0))
+        end
+    end
+    
+    # Draw goal
+    goal_pixel = world_to_pixel(pomdp, pomdp.goal_position, render_size)
+    draw!(img, CirclePointRadius(Point(round(Int, goal_pixel[1]), round(Int, goal_pixel[2])), 4), 
+          RGB{Float64}(0,0,1))
+    
+    # Draw current position and direction
+    pos_pixel = world_to_pixel(pomdp, s[1:2], render_size)
+    theta = s[3]
+    direction = [
+        pos_pixel[1] + 7*cos(theta),
+        pos_pixel[2] - 7*sin(theta)
+    ]
+    
+    # Draw position circle
+    draw!(img, CirclePointRadius(Point(round(Int, pos_pixel[1]), round(Int, pos_pixel[2])), 5), 
+          RGB{Float64}(1,0,0))
+    # Draw direction line
+    draw!(img, LineSegment(Point(round(Int, pos_pixel[1]), round(Int, pos_pixel[2])), 
+                          Point(round(Int, direction[1]), round(Int, direction[2]))), 
+          RGB{Float64}(1,0,0))
+    
+    return img
+end
+
+# Add interactive visualization function
+function play_interactive()
+    pomdp = MordorHikePOMDP(Val(:medium))
+    s = rand(initialstate(pomdp))
+    path = [s[1:2]]
+    total_reward = 0.0
+    
+    # Create figure and image plot
+    fig = Figure(size=(300, 300))
+    ax = Axis(fig[1, 1], aspect=DataAspect())
+    hidedecorations!(ax)
+    hidespines!(ax)
+    
+    # Initial render
+    img = render(pomdp, s, path=path)
+    image!(ax, rotr90(img))
+    
+    # Get the GLFW window
+    glfw_window = to_native(display(fig))
+    
+    on(events(fig).keyboardbutton) do event
+        if event.action == Keyboard.press
+            action = if event.key == Keyboard.w
+                1
+            elseif event.key == Keyboard.s
+                2
+            elseif event.key == Keyboard.a
+                3
+            elseif event.key == Keyboard.d
+                4
+            elseif event.key == Keyboard.q
+                println("Total return: $total_reward")
+                GLFW.SetWindowShouldClose(glfw_window, true)
+                return false
+            else
+                return true
+            end
+            
+            # Update state
+            sp = rand(transition(pomdp, s, action))
+            o = rand(observation(pomdp, s, action, sp))
+            r = reward(pomdp, s, action, sp)
+            total_reward += r
+            
+            println("Observation: $o")
+            println("Reward: $r")
+            
+            push!(path, sp[1:2])
+            s = sp
+            
+            # Update visualization
+            img = render(pomdp, s, path=path)
+            image!(ax, rotr90(img))
+            
+            # Check if terminal
+            if isterminal(pomdp, s)
+                println("Goal reached!")
+                println("Total return: $total_reward")
+                GLFW.SetWindowShouldClose(glfw_window, true)
+            end
+            return true
+        end
+        return true
+    end
+    
+    # Wait for window to close
+    while !GLFW.WindowShouldClose(glfw_window)
+        sleep(0.01)
+    end
+end
+
+#play_interactive()
+
+
 pomdp = MordorHikePOMDP(Val(:medium))
 # Define solvers
 rollout_policy = 
 policy = Dict(
-    "POMCPOW (deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=30), pomdp),
-    "POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
-    "POMCPOW - GoToGoalPolicy" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10, estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
-    "Random" => RandomPolicy(pomdp)
+    "POMCPOW (deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=100), pomdp),
+    #"POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
+    #"POMCPOW - GoToGoalPolicy" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10, estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
+    #"Random" => RandomPolicy(pomdp)
 )
 
 # Simulate
@@ -312,16 +491,23 @@ for (policy_name, planner) in policy
     println("\n$policy_name Policy")
     returns = []
     scores = []
-    
+    lengths = []
     for i in 1:10
-        hist = simulate(hr, pomdp, planner)
+        hist = simulate(hr, pomdp, planner) 
         push!(returns, discounted_reward(hist))
         push!(scores, sum(r for (s, b, a, r, sp, o) in hist))
-        println("Return: $(returns[i]), Score: $(scores[i])")
+        push!(lengths, length(hist))
+        println("Return: $(returns[i]), Score: $(scores[i]), Length: $(lengths[i])")
+        # display the path
+        path = [s[1:2] for (s, b, a, r, sp, o) in hist]
+        last_state = hist[end][1]
+        display(render(pomdp, last_state, path=path))
+        sleep(2.0)
     end
 
     println(""" $policy_name Policy
         Mean and std of returns: $(mean(returns)), $(std(returns))
         Mean and std of scores: $(mean(scores)), $(std(scores))
+        Mean and std of lengths: $(mean(lengths)), $(std(lengths))
         """)
 end
