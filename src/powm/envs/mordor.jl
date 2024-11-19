@@ -10,6 +10,7 @@ import Pkg
 # Pkg.add("Colors")
 # Pkg.add("GLMakie")
 # Pkg.add("ImageDraw")
+#Pkg.add("DataStructures")
 import POMDPs
 import POMDPModels
 import Distributions
@@ -22,6 +23,7 @@ using LinearAlgebra
 using Distributions
 using Random
 using Distributions: VonMises
+using DataStructures
 
 
 using Images
@@ -216,7 +218,6 @@ function POMDPs.transition(pomdp::MordorHikePOMDP, s::Vector{Float64}, a::Int64)
         return [next_pos[1], next_pos[2], next_theta]
     end)
 end
-
 
 
 function POMDPs.observation(pomdp::MordorHikePOMDP, a::Int64, sp::Vector{Float64})
@@ -469,14 +470,141 @@ function play_interactive()
     end
 end
 
+
+
+struct AStarRolloutPolicy{P} <: Policy
+    pomdp::P
+    grid_size::Int
+    cost_cache::Dict{Tuple{Int,Int}, Float64}
+    
+    function AStarRolloutPolicy(pomdp::P, grid_size::Int=20) where P
+        cost_cache = Dict{Tuple{Int,Int}, Float64}()
+        new{P}(pomdp, grid_size, cost_cache)
+    end
+end
+
+function world_to_grid(policy::AStarRolloutPolicy, pos::Vector{Float64})
+    pomdp = policy.pomdp
+    x_norm = (pos[1] - pomdp.map_lower_bound[1]) / (pomdp.map_upper_bound[1] - pomdp.map_lower_bound[1])
+    y_norm = (pos[2] - pomdp.map_lower_bound[2]) / (pomdp.map_upper_bound[2] - pomdp.map_lower_bound[2])
+    
+    grid_x = round(Int, x_norm * (policy.grid_size - 1)) + 1
+    grid_y = round(Int, y_norm * (policy.grid_size - 1)) + 1
+    
+    return (clamp(grid_x, 1, policy.grid_size), clamp(grid_y, 1, policy.grid_size))
+end
+
+function grid_to_world(policy::AStarRolloutPolicy, grid_pos::Tuple{Int,Int})
+    pomdp = policy.pomdp
+    x_norm = (grid_pos[1] - 1) / (policy.grid_size - 1)
+    y_norm = (grid_pos[2] - 1) / (policy.grid_size - 1)
+    
+    x = x_norm * (pomdp.map_upper_bound[1] - pomdp.map_lower_bound[1]) + pomdp.map_lower_bound[1]
+    y = y_norm * (pomdp.map_upper_bound[2] - pomdp.map_lower_bound[2]) + pomdp.map_lower_bound[2]
+    
+    return [x, y]
+end
+
+function get_neighbors(pos::Tuple{Int,Int}, grid_size::Int)
+    neighbors = Tuple{Int,Int}[]
+    for (dx, dy) in [(0,1), (0,-1), (1,0), (-1,0)]
+        new_x = pos[1] + dx
+        new_y = pos[2] + dy
+        if 1 ≤ new_x ≤ grid_size && 1 ≤ new_y ≤ grid_size
+            push!(neighbors, (new_x, new_y))
+        end
+    end
+    return neighbors
+end
+
+function heuristic(pos::Tuple{Int,Int}, goal::Tuple{Int,Int})
+    return abs(pos[1] - goal[1]) + abs(pos[2] - goal[2])
+end
+
+function get_path_to_goal(policy::AStarRolloutPolicy, start_pos::Vector{Float64})
+    pomdp = policy.pomdp
+    start_grid = world_to_grid(policy, start_pos)
+    goal_grid = world_to_grid(policy, pomdp.goal_position)
+    
+    # A* implementation
+    frontier = PriorityQueue{Tuple{Int,Int}, Float64}()
+    enqueue!(frontier, start_grid => 0.0)
+    
+    came_from = Dict{Tuple{Int,Int}, Union{Nothing, Tuple{Int,Int}}}()
+    cost_so_far = Dict{Tuple{Int,Int}, Float64}()
+    
+    came_from[start_grid] = nothing
+    cost_so_far[start_grid] = 0.0
+    
+    while !isempty(frontier)
+        current = dequeue!(frontier)
+        
+        if current == goal_grid
+            break
+        end
+        
+        for next in get_neighbors(current, policy.grid_size)
+            world_pos = grid_to_world(policy, next)
+            new_cost = cost_so_far[current] - calculate_altitude(pomdp, world_pos)
+            
+            if !haskey(cost_so_far, next) || new_cost < cost_so_far[next]
+                cost_so_far[next] = new_cost
+                priority = new_cost + heuristic(next, goal_grid)
+                frontier[next] = priority
+                came_from[next] = current
+            end
+        end
+    end
+    
+    # Reconstruct path
+    path = Vector{Float64}[]
+    current = goal_grid
+    while current != nothing
+        pushfirst!(path, grid_to_world(policy, current))
+        current = get(came_from, current, nothing)
+    end
+    
+    return path
+end
+
+function POMDPs.action(policy::AStarRolloutPolicy, s)
+    path = get_path_to_goal(policy, s[1:2])
+    
+    if length(path) < 2
+        return rand(1:4)  # Random action if no path found
+    end
+    
+    # Get vector to next waypoint
+    next_pos = path[min(2, length(path))]
+    goal_vec = next_pos - s[1:2]
+    
+    # Get current orientation vectors
+    theta = s[3]
+    forward = [cos(theta), sin(theta)]
+    lateral = [-sin(theta), cos(theta)]
+    
+    # Calculate dot products with goal vector
+    forward_alignment = dot(normalize(goal_vec), forward)
+    lateral_alignment = dot(normalize(goal_vec), lateral)
+    
+    # Choose action based on alignment
+    if abs(forward_alignment) > abs(lateral_alignment)
+        return forward_alignment > 0 ? 1 : 2  # Forward or backward
+    else
+        return lateral_alignment > 0 ? 3 : 4  # Right or left
+    end
+end
+
+
 #play_interactive()
 
 
 pomdp = MordorHikePOMDP(Val(:medium))
 # Define solvers
-rollout_policy = 
+
 policy = Dict(
-    "POMCPOW (deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=100), pomdp),
+    #"POMCPOW (deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=100000, max_depth=100), pomdp),
+    "A* Rollout" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 40))), pomdp),
     #"POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
     #"POMCPOW - GoToGoalPolicy" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10, estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
     #"Random" => RandomPolicy(pomdp)
