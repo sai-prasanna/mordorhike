@@ -25,12 +25,41 @@ from sub_models.functions_losses import symexp
 from sub_models.world_models import WorldModel, MSELoss
 
 
+
+
+class EpisodeFrameCounter(gymnasium.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.frame_count = 0
+
+    def reset(self, **kwargs):
+        self.frame_count = 0
+        obs, info = self.env.reset(**kwargs)
+        info["episode_frame_number"] = self.frame_count
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.frame_count += 1
+        info["episode_frame_number"] = self.frame_count
+        if terminated or truncated:
+            self.frame_count = 0
+        return obs, reward, terminated, truncated, info
+
+
 def build_single_env(env_name, image_size, seed):
-    env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
-    env = env_wrapper.SeedEnvWrapper(env, seed=seed)
-    env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
-    env = gymnasium.wrappers.ResizeObservation(env, shape=image_size)
-    env = env_wrapper.LifeLossInfo(env)
+    if env_name.startswith("ALE/"):
+        env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
+        env = env_wrapper.SeedEnvWrapper(env, seed=seed)
+        env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
+        env = gymnasium.wrappers.ResizeObservation(env, shape=image_size)
+        env = env_wrapper.LifeLossInfo(env)
+    else:
+        env = gymnasium.make(env_name, render_mode="rgb_array")
+        env = env_wrapper.SeedEnvWrapper(env, seed=seed)
+        env = gymnasium.wrappers.TransformObservation(env, lambda obs: obs['vector'])
+        env.observation_space = env.observation_space.spaces['vector']
+        env = EpisodeFrameCounter(env)
     return env
 
 
@@ -113,21 +142,24 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
                         torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
                         greedy=False
                     )
-
-            context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
+            if conf.Models.WorldModel.EncoderType == "cnn":
+                context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
+            else:
+                context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B D -> B 1 D"))
             context_action.append(action)
         else:
             action = vec_env.action_space.sample()
 
         obs, reward, done, truncated, info = vec_env.step(action)
-        replay_buffer.append(current_obs, action, reward, np.logical_or(done, info["life_loss"]))
+        replay_buffer.append(current_obs, action, reward, np.logical_or(done, info.get("life_loss", False)))
 
         done_flag = np.logical_or(done, truncated)
         if done_flag.any():
             for i in range(num_envs):
                 if done_flag[i]:
                     logger.log(f"sample/{env_name}_reward", sum_reward[i])
-                    logger.log(f"sample/{env_name}_episode_steps", current_info["episode_frame_number"][i]//4)  # framskip=4
+                    frame_skip = 4 if env_name.startswith("ALE/") else 1 # frameskip=4 for Atari
+                    logger.log(f"sample/{env_name}_episode_steps", current_info["episode_frame_number"][i]//frame_skip)
                     logger.log("replay_buffer/length", len(replay_buffer))
                     sum_reward[i] = 0
 
@@ -151,7 +183,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
 
         # train agent part >>>
         if replay_buffer.ready() and total_steps % (train_agent_every_steps//num_envs) == 0 and total_steps*num_envs >= 0:
-            if total_steps % (save_every_steps//num_envs) == 0:
+            if env_name.startswith("ALE/") and total_steps % (save_every_steps//num_envs) == 0:
                 log_video = True
             else:
                 log_video = False
@@ -193,7 +225,10 @@ def build_world_model(conf, action_dim):
         transformer_max_length=conf.Models.WorldModel.TransformerMaxLength,
         transformer_hidden_dim=conf.Models.WorldModel.TransformerHiddenDim,
         transformer_num_layers=conf.Models.WorldModel.TransformerNumLayers,
-        transformer_num_heads=conf.Models.WorldModel.TransformerNumHeads
+        transformer_num_heads=conf.Models.WorldModel.TransformerNumHeads,
+        encoder_type=conf.Models.WorldModel.EncoderType,
+        input_dim=conf.Models.WorldModel.InputDim,
+        hidden_dim=conf.Models.WorldModel.HiddenDim
     ).cuda()
 
 
@@ -210,6 +245,7 @@ def build_agent(conf, action_dim):
 
 
 if __name__ == "__main__":
+    from powm import envs
     # ignore warnings
     import warnings
     warnings.filterwarnings('ignore')
@@ -245,8 +281,13 @@ if __name__ == "__main__":
         agent = build_agent(conf, action_dim)
 
         # build replay buffer
+        if conf.Models.WorldModel.EncoderType == "cnn":
+            obs_shape = (conf.BasicSettings.ImageSize, conf.BasicSettings.ImageSize, 3)
+        else:
+            obs_shape = (conf.Models.WorldModel.InputDim,)
+
         replay_buffer = ReplayBuffer(
-            obs_shape=(conf.BasicSettings.ImageSize, conf.BasicSettings.ImageSize, 3),
+            obs_shape=obs_shape,
             num_envs=conf.JointTrainAgent.NumEnvs,
             max_length=conf.JointTrainAgent.BufferMaxLength,
             warmup_length=conf.JointTrainAgent.BufferWarmUp,

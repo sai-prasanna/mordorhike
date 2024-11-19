@@ -77,6 +77,9 @@ def load_config(config_path):
     conf.Models.WorldModel.TransformerHiddenDim = 0
     conf.Models.WorldModel.TransformerNumLayers = 0
     conf.Models.WorldModel.TransformerNumHeads = 0
+    conf.Models.WorldModel.EncoderType = ""
+    conf.Models.WorldModel.InputDim = 0
+    conf.Models.WorldModel.HiddenDim = 0
 
     conf.Models.Agent = CN()
     conf.Models.Agent.NumLayers = 0

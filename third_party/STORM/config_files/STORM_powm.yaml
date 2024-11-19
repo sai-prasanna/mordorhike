@@ -29,8 +29,8 @@ Models:
     TransformerHiddenDim: 512
     TransformerNumLayers: 2
     TransformerNumHeads: 8
-    EncoderType: "cnn"
-    InputDim: 1024
+    EncoderType: "mlp"
+    InputDim: 1
     HiddenDim: 512
 
   Agent:

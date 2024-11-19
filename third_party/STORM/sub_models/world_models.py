@@ -193,7 +193,10 @@ class MSELoss(nn.Module):
 
     def forward(self, obs_hat, obs):
         loss = (obs_hat - obs)**2
-        loss = reduce(loss, "B L C H W -> B L", "sum")
+        if len(loss.shape) == 5:
+            loss = reduce(loss, "B L C H W -> B L", "sum")
+        else:
+            loss = reduce(loss, "B L D -> B L", "sum")
         return loss.mean()
 
 
@@ -213,9 +216,49 @@ class CategoricalKLDivLossWithFreeBits(nn.Module):
         return kl_div, real_kl_div
 
 
+class EncoderMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, embedding_size) -> None:
+        super().__init__()
+        self.backbone = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, embedding_size)
+        )
+
+    def forward(self, x):
+        # x shape: [B L D]
+        return self.backbone(x)
+
+
+class DecoderMLP(nn.Module):
+    def __init__(self, stoch_dim, hidden_dim, output_dim) -> None:
+        super().__init__()
+        self.backbone = nn.Sequential(
+            nn.Linear(stoch_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, output_dim)
+        )
+
+    def forward(self, sample):
+        # sample shape: [B L D]
+        return self.backbone(sample)
+
+
 class WorldModel(nn.Module):
     def __init__(self, in_channels, action_dim,
-                 transformer_max_length, transformer_hidden_dim, transformer_num_layers, transformer_num_heads):
+                 transformer_max_length, transformer_hidden_dim, 
+                 transformer_num_layers, transformer_num_heads,
+                 encoder_type="cnn",  # Add encoder_type parameter
+                 input_dim=None,      # Add input_dim for MLP case
+                 hidden_dim=None):    # Add hidden_dim for MLP case
         super().__init__()
         self.transformer_hidden_dim = transformer_hidden_dim
         self.final_feature_width = 4
@@ -225,12 +268,40 @@ class WorldModel(nn.Module):
         self.tensor_dtype = torch.bfloat16 if self.use_amp else torch.float32
         self.imagine_batch_size = -1
         self.imagine_batch_length = -1
+        self.encoder_type = encoder_type
 
-        self.encoder = EncoderBN(
-            in_channels=in_channels,
-            stem_channels=32,
-            final_feature_width=self.final_feature_width
-        )
+        # Choose encoder/decoder based on type
+        if encoder_type == "cnn":
+            self.obs_encoder = EncoderBN(
+                in_channels=in_channels,
+                stem_channels=32,
+                final_feature_width=self.final_feature_width
+            )
+            embedding_size = self.obs_encoder.last_channels*self.final_feature_width*self.final_feature_width
+            
+            self.obs_decoder = DecoderBN(
+                stoch_dim=self.stoch_flattened_dim,
+                last_channels=self.obs_encoder.last_channels,
+                original_in_channels=in_channels,
+                stem_channels=32,
+                final_feature_width=self.final_feature_width
+            )
+        elif encoder_type == "mlp":
+            assert input_dim is not None and hidden_dim is not None, "MLP encoder requires input_dim and hidden_dim"
+            embedding_size = hidden_dim
+            self.obs_encoder = EncoderMLP(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                embedding_size=embedding_size
+            )
+            self.obs_decoder = DecoderMLP(
+                stoch_dim=self.stoch_flattened_dim,
+                hidden_dim=hidden_dim,
+                output_dim=input_dim
+            )
+        else:
+            raise ValueError(f"Unknown encoder type: {encoder_type}")
+
         self.storm_transformer = StochasticTransformerKVCache(
             stoch_dim=self.stoch_flattened_dim,
             action_dim=action_dim,
@@ -240,18 +311,13 @@ class WorldModel(nn.Module):
             max_length=transformer_max_length,
             dropout=0.1
         )
+        
         self.dist_head = DistHead(
-            image_feat_dim=self.encoder.last_channels*self.final_feature_width*self.final_feature_width,
+            image_feat_dim=embedding_size,
             transformer_hidden_dim=transformer_hidden_dim,
             stoch_dim=self.stoch_dim
         )
-        self.image_decoder = DecoderBN(
-            stoch_dim=self.stoch_flattened_dim,
-            last_channels=self.encoder.last_channels,
-            original_in_channels=in_channels,
-            stem_channels=32,
-            final_feature_width=self.final_feature_width
-        )
+        
         self.reward_decoder = RewardDecoder(
             num_classes=255,
             embedding_size=self.stoch_flattened_dim,
@@ -272,7 +338,7 @@ class WorldModel(nn.Module):
 
     def encode_obs(self, obs):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            embedding = self.encoder(obs)
+            embedding = self.obs_encoder(obs)
             post_logits = self.dist_head.forward_post(embedding)
             sample = self.stright_throught_gradient(post_logits, sample_mode="random_sample")
             flattened_sample = self.flatten_sample(sample)
@@ -297,7 +363,7 @@ class WorldModel(nn.Module):
             prior_sample = self.stright_throught_gradient(prior_logits, sample_mode="random_sample")
             prior_flattened_sample = self.flatten_sample(prior_sample)
             if log_video:
-                obs_hat = self.image_decoder(prior_flattened_sample)
+                obs_hat = self.obs_decoder(prior_flattened_sample)
             else:
                 obs_hat = None
             reward_hat = self.reward_decoder(dist_feat)
@@ -381,13 +447,13 @@ class WorldModel(nn.Module):
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
             # encoding
-            embedding = self.encoder(obs)
+            embedding = self.obs_encoder(obs)
             post_logits = self.dist_head.forward_post(embedding)
             sample = self.stright_throught_gradient(post_logits, sample_mode="random_sample")
             flattened_sample = self.flatten_sample(sample)
 
             # decoding image
-            obs_hat = self.image_decoder(flattened_sample)
+            obs_hat = self.obs_decoder(flattened_sample)
 
             # transformer
             temporal_mask = get_subsequent_mask_with_batch_length(batch_length, flattened_sample.device)

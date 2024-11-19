@@ -20,7 +20,7 @@ class ReplayBuffer():
             self.action_buffer = np.empty((max_length//num_envs, num_envs), dtype=np.float32)
             self.reward_buffer = np.empty((max_length//num_envs, num_envs), dtype=np.float32)
             self.termination_buffer = np.empty((max_length//num_envs, num_envs), dtype=np.float32)
-
+        self.obs_shape = obs_shape
         self.length = 0
         self.num_envs = num_envs
         self.last_pointer = -1
@@ -73,8 +73,9 @@ class ReplayBuffer():
                 reward.append(external_reward)
                 termination.append(external_termination)
 
-            obs = torch.cat(obs, dim=0).float() / 255
-            obs = rearrange(obs, "B T H W C -> B T C H W")
+            obs = torch.cat(obs, dim=0).float()
+            if len(self.obs_shape) == 3:
+                obs = rearrange(obs, "B T H W C -> B T C H W") / 255
             action = torch.cat(action, dim=0)
             reward = torch.cat(reward, dim=0)
             termination = torch.cat(termination, dim=0)
