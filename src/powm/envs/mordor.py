@@ -1,7 +1,7 @@
 import time
+import random
 
 import cv2
-import random
 import gymnasium as gym
 import numpy as np
 import scipy.stats
@@ -238,7 +238,7 @@ class MordorHike(gym.Env):
             positions = np.tile(self.fixed_start_pos, (N, 1))
         else:  # uniform
             positions = self.np_random.uniform(
-                self.map_lower_bound, self.map_upper_bound, (N, self.dimensions)
+                self.uniform_start_lower_bound, self.uniform_start_upper_bound, (N, self.dimensions)
             )
 
         num_rotations = int(2 * np.pi / self.rotate_step)
