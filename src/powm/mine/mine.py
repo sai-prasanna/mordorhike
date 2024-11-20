@@ -8,32 +8,32 @@ import torch.optim as optim
 from .deepset import DeepSet
 
 
-def split(hiddens, beliefs, valid_size=0.2):
+def split(latents, beliefs, valid_size=0.2):
     """
-    Splits the joint dataset of hiddens and beliefs using the first samples for
+    Splits the joint dataset of latents and beliefs using the first samples for
     the validation set.
 
     Arguments:
-    - hiddens: tensor
-        Samples of hidden states such that `hiddens[i, :]` is jointly drawn
+    - latents: tensor
+        Samples of latent states such that `latents[i, :]` is jointly drawn
         with `beliefs[i, :]`.
     - beliefs: tuple of tensors
         Samples of beliefs such that `beliefs[i, :]` is jointly drawn with
-        `hiddens[i, :]`.
+        `latents[i, :]`.
     - valid_size: float
         Proportion of samples to use in the validation set.
     """
-    num_samples = hiddens.size(0)
+    num_samples = latents.size(0)
 
     split = int(num_samples * valid_size)
 
-    hiddens_valid = hiddens[:split, :]
-    hiddens_train = hiddens[split:, :]
+    latents_valid = latents[:split, :]
+    latents_train = latents[split:, :]
 
     beliefs_valid = tuple(belief_part[:split, :] for belief_part in beliefs)
     beliefs_train = tuple(belief_part[split:, :] for belief_part in beliefs)
 
-    return hiddens_train, beliefs_train, hiddens_valid, beliefs_valid
+    return latents_train, beliefs_train, latents_valid, beliefs_valid
 
 
 class LogMeanExpWithGradDenom(torch.autograd.Function):
@@ -137,37 +137,39 @@ class LogMeanExpWithEMAGradDenom:
 class MutualInformationNeuralEstimator(nn.Module):
     """Mutual Information Neural Estimator (see arXiv:1801.04062).
 
-    Arguments
+    Arguments:
     - hs_size: int
-        Dimension of the hidden states
+        Dimension of the latent states
     - belief_sizes: List[int]
         Dimension of the beliefs (or state particles)
-    - hidden_size: int
-        Number of neurons in hidden layers
+    - latent_size: int
+        Number of neurons in latent layers
     - num_layers: int
-        Number of hidden layers
+        Number of latent layers
     - alpha: float
         Exponentially moving average rate for the bias-corrected
         gradient denominator
-    - hidden_deepset_encode_size: int
-        If None, hidden is processed as a vector, if
-        integer, the hidden is processed as a set of particles using a deep
-        set whose set representation size is `hidden_deepset_encode_size`.
-    - belief_deepset_encode_sizes: List[int]
+    - latent_deepset_rep_size: int
+        If None, latent is processed as a vector, if
+        integer, the latent is processed as a set of particles using a deep
+        set whose set representation size is `latent_deepset_rep_size`.
+    - belief_deepset_rep_sizes: List[int]
         If None, belief is processed as a vector, if
         integer, the belief is processed as a set of particles using a deep
-        set whose set representation size is `belief_deepset_encode_sizes`.
+        set whose set representation size is `belief_deepset_rep_sizes`.
     """
 
     def __init__(
         self,
         hs_size,
         belief_sizes,
-        hidden_size,
+        latent_size,
         num_layers,
         alpha,
-        hidden_deepset_encode_size,
-        belief_deepset_encode_sizes,
+        latent_deepset_rep_size,
+        belief_deepset_rep_sizes,
+        latent_hidden_sizes=(32, 64),
+        belief_hidden_sizes=(32, 64),
         belief_part=None,
         device=torch.device("cpu"),
     ):
@@ -175,43 +177,43 @@ class MutualInformationNeuralEstimator(nn.Module):
 
         self.belief_part = belief_part
         if self.belief_part is not None:
-            belief_deepset_encode_sizes = (
-                belief_deepset_encode_sizes[self.belief_part],
+            belief_deepset_rep_sizes = (
+                belief_deepset_rep_sizes[self.belief_part],
             )
             belief_sizes = (belief_sizes[self.belief_part],)
 
-        if hidden_deepset_encode_size is not None:
-            self.hidden_encoder = DeepSet(hs_size, hidden_deepset_encode_size)
-            input_size = hidden_deepset_encode_size
+        if latent_deepset_rep_size is not None:
+            self.latent_encoder = DeepSet(hs_size, latent_deepset_rep_size, hidden_sizes=latent_hidden_sizes)
+            input_size = latent_deepset_rep_size
         else:
             input_size = hs_size
 
         self.belief_encoders = []
         for representation_size, belief_size in zip(
-            belief_deepset_encode_sizes,
+            belief_deepset_rep_sizes,
             belief_sizes,
         ):
             if representation_size is None:
                 self.belief_encoders.append(None)
                 input_size += belief_size
             else:
-                encoder = DeepSet(belief_size, representation_size)
+                encoder = DeepSet(belief_size, representation_size, hidden_sizes=belief_hidden_sizes)
                 self.belief_encoders.append(encoder)
                 input_size += representation_size
 
         self.belief_encoders = nn.ModuleList(self.belief_encoders)
 
-        hidden_layers = []
+        latent_layers = []
 
         for _ in range(num_layers - 1):
-            hidden_layers.append(nn.Linear(hidden_size, hidden_size))
-            hidden_layers.append(nn.ReLU())
+            latent_layers.append(nn.Linear(latent_size, latent_size))
+            latent_layers.append(nn.ReLU())
 
         self.sequential = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(input_size, latent_size),
             nn.ReLU(),
-            *hidden_layers,
-            nn.Linear(hidden_size, 1),
+            *latent_layers,
+            nn.Linear(latent_size, 1),
         )
 
         self.logmeanexp = LogMeanExpWithEMAGradDenom(alpha)
@@ -220,31 +222,31 @@ class MutualInformationNeuralEstimator(nn.Module):
         self.to(device)
 
     def forward(
-        self, hiddens, beliefs, hiddens_marginal, beliefs_marginal, use_ema=True
+        self, latents, beliefs, latents_marginal, beliefs_marginal, use_ema=True
     ):
-        """Returns the estimated lower bound the mutual information from
+        """Returns the estimated lower bound of the mutual information from
         samples from the joint distribution and from the product of marginal
         distributions.
 
         Arguments:
-        - hiddens: tensor
-            Samples of hidden states such that `hiddens[i, :]` is
+        - latents: tensor
+            Samples of latent states such that `latents[i, :]` is
             jointly drawn with `beliefs[i, :]`.
         - beliefs: tuple of tensors
-            Samples of beliefs such that `beliefs[i, :]` is jointly
-            drawn with `hiddens[i, :]`.
-        - hiddens_marginal: tensor
-            Samples of hidden states
-        - beliefs_marginal: tensor
+            Samples of beliefs such that `beliefs[i, :]` are jointly
+            drawn with `latents[i, :]`.
+        - latents_marginal: tensor
+            Samples of latent states
+        - beliefs_marginal: tuple of tensors
             Samples of beliefs
-        - use_ema: tensor
+        - use_ema: bool
             Whether to use the exponentially moving average bias-
             correction in the estimation of the gradient.
 
         Returns:
-        - T_joint: float
+        - T_joint: tensor
             Average statistic for samples from the joint distribution
-        - log_mean_exp_t_pom: float
+        - log_mean_exp_t_pom: tensor
             Average log mean exp of the statistic for samples from the product
             of marginal distributions.
         """
@@ -260,12 +262,12 @@ class MutualInformationNeuralEstimator(nn.Module):
             encoded.append(belief_part)
             encoded_marginal.append(belief_part_marginal)
 
-        if self.hidden_encoder is not None:
-            hiddens = self.hidden_encoder(hiddens)
-            hiddens_marginal = self.hidden_encoder(hiddens_marginal)
+        if self.latent_encoder is not None:
+            latents = self.latent_encoder(latents)
+            latents_marginal = self.latent_encoder(latents_marginal)
 
-        joint = torch.cat([hiddens] + encoded, dim=1)
-        pom = torch.cat([hiddens_marginal] + encoded_marginal, dim=1)
+        joint = torch.cat([latents] + encoded, dim=1)
+        pom = torch.cat([latents_marginal] + encoded_marginal, dim=1)
 
         T_joint = self.sequential.forward(joint)
         T_pom = self.sequential.forward(pom)
@@ -274,27 +276,29 @@ class MutualInformationNeuralEstimator(nn.Module):
 
     def optimize(
         self,
-        hiddens,
+        latents,
         beliefs,
         num_epochs,
         logger,
         learning_rate,
         batch_size,
         lambd,
+        latents_valid=None,
+        beliefs_valid=None,
         valid_size=None,
     ):
         """Optimize (maximize) the lower bound of the mutual information by
         gradient ascent over samples of the joint distribution. The mutual
-        information is between the hidden states `hiddens` and the belief
+        information is between the latent states `latents` and the belief
         representations `beliefs`.
 
         Arguments:
-        - hiddens: tensor
-            The samples of the hidden states such that `hiddens[i, :]`
-            is jointly drawn with `beliefs[i, :]`.
+        - latents: tensor
+            The samples of the latent states such that `latents[i, :]`
+            are jointly drawn with `beliefs[i, :]`.
         - beliefs: tuple of tensors
-            The samples of the beliefs such that `beliefs[k][i, :]` is
-            jointly drawn with `hiddens[i, :]`.
+            The samples of the beliefs such that `beliefs[k][i, :]` are
+            jointly drawn with `latents[i, :]`.
         - num_epochs: int
             The number of epochs to perform on the joint samples.
         - logger: function
@@ -323,11 +327,11 @@ class MutualInformationNeuralEstimator(nn.Module):
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
         if valid_size is not None:
-            hiddens, beliefs, hiddens_valid, beliefs_valid = split(
-                hiddens, beliefs, valid_size=valid_size
+            latents, beliefs, latents_valid, beliefs_valid = split(
+                latents, beliefs, valid_size=valid_size
             )
 
-        num_samples = hiddens.size(0)
+        num_samples = latents.size(0)
 
         for epoch in range(num_epochs):
 
@@ -343,11 +347,11 @@ class MutualInformationNeuralEstimator(nn.Module):
                 indices_pom_1 = perm_pom_1[i : i + batch_size]
                 indices_pom_2 = perm_pom_2[i : i + batch_size]
 
-                hiddens_batch = hiddens[indices_joint, :]
+                latents_batch = latents[indices_joint, :]
                 beliefs_batch = tuple(
                     belief_part[indices_joint, ...] for belief_part in beliefs
                 )
-                hiddens_marginal_batch = hiddens[indices_pom_1, :]
+                latents_marginal_batch = latents[indices_pom_1, :]
                 beliefs_marginal_batch = tuple(
                     belief_part[indices_pom_2, ...] for belief_part in beliefs
                 )
@@ -361,9 +365,9 @@ class MutualInformationNeuralEstimator(nn.Module):
                 )
 
                 T_joint, T_pom_logmeanexp = self.forward(
-                    hiddens_batch.to(self.device),
+                    latents_batch.to(self.device),
                     beliefs_batch,
-                    hiddens_marginal_batch.to(self.device),
+                    latents_marginal_batch.to(self.device),
                     beliefs_marginal_batch,
                 )
 
@@ -380,7 +384,7 @@ class MutualInformationNeuralEstimator(nn.Module):
             mean_value = total_value / int(num_samples / batch_size)
 
             if valid_size is not None:
-                valid_estimate = self.estimate(hiddens_valid, beliefs_valid)
+                valid_estimate = self.estimate(latents_valid, beliefs_valid)
             else:
                 valid_estimate = mean_value
 
@@ -411,31 +415,31 @@ class MutualInformationNeuralEstimator(nn.Module):
         if valid_size is not None:
             self.load_state_dict(best_weights)
 
-    def estimate(self, hiddens, beliefs):
+    def estimate(self, latents, beliefs):
         """
         Compute the mutual information estimation using optimized network
         weights.
 
         Arguments:
-        - hiddens: tensor
-            The samples of the hidden states such that `hiddens[i, :]`
-            is jointly drawn with `beliefs[i, :]`.
+        - latents: tensor
+            The samples of the latent states such that `latents[i, :]`
+            are jointly drawn with `beliefs[i, :]`.
         - beliefs: tuple of tensors
-            The samples of the beliefs such that `beliefs[k][i, :]` is
-            jointly drawn with `hiddens[i, :]`.
+            The samples of the beliefs such that `beliefs[k][i, :]` are
+            jointly drawn with `latents[i, :]`.
 
         Returns:
         - estimate: float
             The estimated mutual information based on the lower bound
-            maximisation.
+            maximization.
         """
         if self.belief_part is not None:
             beliefs = (beliefs[self.belief_part],)
 
-        perm_pom_1 = torch.randperm(hiddens.size(0))
-        perm_pom_2 = torch.randperm(hiddens.size(0))
+        perm_pom_1 = torch.randperm(latents.size(0))
+        perm_pom_2 = torch.randperm(latents.size(0))
 
-        hiddens_marginal = hiddens[perm_pom_1, :]
+        latents_marginal = latents[perm_pom_1, :]
         beliefs_marginal = tuple(
             belief_part[perm_pom_2, ...] for belief_part in beliefs
         )
@@ -443,7 +447,7 @@ class MutualInformationNeuralEstimator(nn.Module):
         self.cpu()
         with torch.no_grad():
             T_joint, T_pom_logmeanexp = self.forward(
-                hiddens, beliefs, hiddens_marginal, beliefs_marginal, use_ema=False
+                latents, beliefs, latents_marginal, beliefs_marginal, use_ema=False
             )
         self.to(self.device)
 
@@ -454,11 +458,11 @@ class MutualInformationNeuralEstimator(nn.Module):
         Saves the weights of a trained estimator on disk. Does not save the
         optimizer's momenta.
 
-        Argument:
-            run_id: str
-                Unique identifier for the training run
-            episode: int
-                The episode at which the agent was saved
+        Arguments:
+        - run_id: str
+            Unique identifier for the training run
+        - episode: int
+            The episode at which the agent was saved
         """
         os.makedirs("weights", exist_ok=True)
         path = f"weights/{run_id}-{episode}-{{}}.pth"
@@ -468,11 +472,11 @@ class MutualInformationNeuralEstimator(nn.Module):
         """Loads the weights of an estimator saved on disk. Does not load the
         optimizer's momenta.
 
-        Argument:
-            run_id: str
-                Unique identifier for the training run
-            episode: int
-                The episode at which the agent was saved
+        Arguments:
+        - run_id: str
+            Unique identifier for the training run
+        - episode: int
+            The episode at which the agent was saved
         """
         path = f"weights/{run_id}-{episode}-{{}}.pth"
         self.load_state_dict(torch.load(path.format("T")))

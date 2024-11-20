@@ -12,18 +12,19 @@ class DeepSet(nn.Module):
         The vector size for the set representation
     """
 
-    def __init__(self, input_size, representation_size):
+    def __init__(self, input_size, representation_size, hidden_sizes=(32, 64)):
         super().__init__()
 
-        self.phi = nn.Sequential(
-            nn.Linear(input_size, 32),
-            nn.ReLU(),
-            nn.Linear(32, 64),
-            nn.ReLU(),
-            nn.Linear(64, representation_size))
+        layers = []
+        in_size = input_size
+        for out_size in hidden_sizes:
+            layers.append(nn.Linear(in_size, out_size))
+            layers.append(nn.ReLU())
+            in_size = out_size
+        layers.append(nn.Linear(in_size, representation_size))
+        self.phi = nn.Sequential(*layers)
 
         self.rho = nn.Linear(representation_size, representation_size)
-
     def forward(self, input):
         """
         Computes the forward pass in the encoder and outputs the set

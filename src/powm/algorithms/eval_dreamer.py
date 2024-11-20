@@ -27,7 +27,7 @@ def epsilon_greedy_policy(agent, eps, policy_mode="train"):
     return policy
 
 
-def collect_beliefs(logger, agent, config, driver, n_samples, eps, policy_mode):
+def collect_beliefs(logger, agent, config, driver: embodied.Driver, num_episodes, eps, policy_mode):
     pred_beliefs = [[] for _ in range(driver.length)]
     true_beliefs = [[] for _ in range(driver.length)]
     driver.reset(agent.init_policy)
@@ -88,7 +88,7 @@ def collect_beliefs(logger, agent, config, driver, n_samples, eps, policy_mode):
     driver.on_step(log_step)
     driver.on_step(replay.add)
 
-    driver(policy, steps=n_samples)
+    driver(policy, episodes=num_episodes)
     dataset_eval = iter(
         agent.dataset(bind(replay.dataset, config.batch_size, config.batch_length_eval))
     )
@@ -152,11 +152,12 @@ def main(argv=None):
     torch.manual_seed(config.seed)
 
     # Create the environment once
-    env = make_env(config)
+    env = make_env(config, index=0)
     agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
     logger = make_logger(config, metric_dir=parsed.metric_dir)
+    env.close()
 
-    fns = [bind(make_env, config, env_id=i, estimate_belief=True) for i in range(1)]
+    fns = [bind(make_env, config, index=i, estimate_belief=True) for i in range(config.run.num_envs)]
     driver = embodied.Driver(fns, config.run.driver_parallel)
     checkpoint = embodied.Checkpoint()
     checkpoint.agent = agent
@@ -167,11 +168,20 @@ def main(argv=None):
 
         for eps in [0.0, 0.5, 1.0]:
             train_pred_beliefs, train_true_beliefs = collect_beliefs(
-                logger,
+                logger if eps == 0.0 else None,
                 agent,
                 config,
                 driver,
-                10 * config.batch_size * config.batch_length_eval,
+                100,
+                eps,
+                policy_mode=parsed.policy_mode,
+            )
+            valid_pred_beliefs, valid_true_beliefs = collect_beliefs(
+                None,
+                agent,
+                config,
+                driver,
+                10,
                 eps,
                 policy_mode=parsed.policy_mode,
             )
@@ -214,9 +224,11 @@ def main(argv=None):
                 agent,
                 config,
                 driver,
-                2 * config.batch_size * config.batch_length_eval,
+                10,
                 eps,
                 policy_mode=parsed.policy_mode,
+                latents_valid=valid_pred_beliefs,
+                beliefs_valid=valid_true_beliefs,
             )
             test_mi = mine.estimate(test_pred_beliefs, (test_true_beliefs,))
             logger.add(
@@ -235,4 +247,5 @@ def main(argv=None):
 
 # Example usage
 if __name__ == "__main__":
-    main()
+    # main()
+    main(["--logdir", "test_rssm"])
