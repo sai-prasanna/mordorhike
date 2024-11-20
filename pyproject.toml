@@ -11,6 +11,7 @@ dependencies = [
     "matplotlib>=3.9.2",
     "opencv-python>=4.10.0.84",
     "recall2imagine",
+    "storm-wm",
     "tensorboardx>=2.6.2.2",
     "torch>=2.4.1",
     "wandb[media,video]>=0.18.3",
@@ -19,11 +20,13 @@ dependencies = [
 [tool.uv.sources]
 dreamerv3 = { path = "third_party/dreamerv3", editable = true }
 recall2imagine = { path = "third_party/recall2imagine", editable = true }
+storm-wm = { path = "third_party/STORM", editable = true }
 
 [project.scripts]
 train-dreamer = "powm.algorithms.train_dreamer:main"
 eval-dreamer = "powm.algorithms.eval_dreamer:main"
 train-r2i = "powm.algorithms.train_r2i:main"
+train-storm = "powm.algorithms.train_storm:main"
 
 [build-system]
 requires = ["hatchling"]
