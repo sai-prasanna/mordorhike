@@ -6,10 +6,10 @@ from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 from torch.cuda.amp import autocast
 
-from sub_models.functions_losses import SymLogTwoHotLoss
-from sub_models.attention_blocks import get_subsequent_mask_with_batch_length, get_subsequent_mask
-from sub_models.transformer_model import StochasticTransformerKVCache
-import agents
+from .functions_losses import SymLogTwoHotLoss
+from .attention_blocks import get_subsequent_mask_with_batch_length, get_subsequent_mask
+from .transformer_model import StochasticTransformerKVCache
+from .. import agents
 
 
 class EncoderBN(nn.Module):

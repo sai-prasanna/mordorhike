@@ -17,14 +17,12 @@ import shutil
 import pickle
 import os
 
-from utils import seed_np_torch, Logger, load_config
-from replay_buffer import ReplayBuffer
-import env_wrapper
-import agents
-from sub_models.functions_losses import symexp
-from sub_models.world_models import WorldModel, MSELoss
-
-
+from .utils import seed_np_torch, Logger, load_config
+from .replay_buffer import ReplayBuffer
+from . import env_wrapper
+from . import agents
+from .sub_models.functions_losses import symexp
+from .sub_models.world_models import WorldModel, MSELoss
 
 
 class EpisodeFrameCounter(gymnasium.Wrapper):
@@ -141,7 +139,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
                         torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
                         greedy=False
                     )
-            if conf.Models.WorldModel.EncoderType == "cnn":
+            if world_model.encoder_type == "cnn":
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
             else:
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B D -> B 1 D"))
@@ -214,8 +212,8 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
         # save model per episode
         if total_steps % (save_every_steps//num_envs) == 0:
             print(colorama.Fore.GREEN + f"Saving model at total steps {total_steps}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), f"{args.log_dir}/world_model_{total_steps}.pth")
-            torch.save(agent.state_dict(), f"{args.log_dir}/agent_{total_steps}.pth")
+            torch.save(world_model.state_dict(), f"{logger.path}/world_model_{total_steps}.pth")
+            torch.save(agent.state_dict(), f"{logger.path}/agent_{total_steps}.pth")
 
 
 def build_world_model(conf, action_dim):

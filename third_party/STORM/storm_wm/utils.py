@@ -24,6 +24,7 @@ def seed_np_torch(seed=20010105):
 
 class Logger():
     def __init__(self, path) -> None:
+        self.path = path
         self.writer = SummaryWriter(logdir=path, flush_secs=1)
         self.tag_step = {}
 

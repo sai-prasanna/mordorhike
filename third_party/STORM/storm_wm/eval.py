@@ -17,12 +17,12 @@ import shutil
 import pickle
 import os
 
-from utils import seed_np_torch, Logger, load_config
-from replay_buffer import ReplayBuffer
-import env_wrapper
-import agents
-from sub_models.functions_losses import symexp
-from sub_models.world_models import WorldModel, MSELoss
+from .utils import seed_np_torch, Logger, load_config
+from .replay_buffer import ReplayBuffer
+from . import env_wrapper
+from . import agents
+from .sub_models.functions_losses import symexp
+from .sub_models.world_models import WorldModel, MSELoss
 
 
 def process_visualize(img):
