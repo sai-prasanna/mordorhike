@@ -36,6 +36,6 @@ Models:
   Agent:
     NumLayers: 2
     HiddenDim: 512
-    Gamma: 0.985
+    Gamma: 0.99
     Lambda: 0.95
     EntropyCoef: 3E-4

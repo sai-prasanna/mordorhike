@@ -47,16 +47,17 @@ class EpisodeFrameCounter(gymnasium.Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def build_single_env(env_name, image_size, seed):
+def build_single_env(env_name, image_size, seed, index=0):
+    env_seed = hash((seed, index)) % (2 ** 32 - 1)
     if env_name.startswith("ALE/"):
         env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
-        env = env_wrapper.SeedEnvWrapper(env, seed=seed)
+        env = env_wrapper.SeedEnvWrapper(env, seed=env_seed)
         env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
         env = gymnasium.wrappers.ResizeObservation(env, shape=image_size)
         env = env_wrapper.LifeLossInfo(env)
     else:
         env = gymnasium.make(env_name, render_mode="rgb_array")
-        env = env_wrapper.SeedEnvWrapper(env, seed=seed)
+        env = env_wrapper.SeedEnvWrapper(env, seed=env_seed)
         env = gymnasium.wrappers.TransformObservation(env, lambda obs: obs['vector'])
         env.observation_space = env.observation_space.spaces['vector']
         env = EpisodeFrameCounter(env)
@@ -65,10 +66,10 @@ def build_single_env(env_name, image_size, seed):
 
 def build_vec_env(env_name, image_size, num_envs, seed):
     # lambda pitfall refs to: https://python.plainenglish.io/python-pitfalls-with-variable-capture-dcfc113f39b7
-    def lambda_generator(env_name, image_size):
-        return lambda: build_single_env(env_name, image_size, seed)
+    def lambda_generator(env_name, image_size, i):
+        return lambda: build_single_env(env_name, image_size, seed, i)
     env_fns = []
-    env_fns = [lambda_generator(env_name, image_size) for i in range(num_envs)]
+    env_fns = [lambda_generator(env_name, image_size, i) for i in range(num_envs)]
     vec_env = gymnasium.vector.AsyncVectorEnv(env_fns=env_fns)
     return vec_env
 
@@ -110,8 +111,6 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
                                   imagine_batch_size, imagine_demonstration_batch_size,
                                   imagine_context_length, imagine_batch_length,
                                   save_every_steps, seed, logger):
-    # create ckpt dir
-    os.makedirs(f"ckpt/{args.n}", exist_ok=True)
 
     # build vec env, not useful in the Atari100k setting
     # but when the max_steps is large, you can use parallel envs to speed up
@@ -157,10 +156,11 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
         if done_flag.any():
             for i in range(num_envs):
                 if done_flag[i]:
-                    logger.log(f"sample/{env_name}_reward", sum_reward[i])
+                    env_steps = total_steps * num_envs + i
+                    logger.log(f"episode/score", sum_reward[i], step=env_steps)
                     frame_skip = 4 if env_name.startswith("ALE/") else 1 # frameskip=4 for Atari
-                    logger.log(f"sample/{env_name}_episode_steps", current_info["episode_frame_number"][i]//frame_skip)
-                    logger.log("replay_buffer/length", len(replay_buffer))
+                    logger.log(f"episode/length", current_info["episode_frame_number"][i]//frame_skip, step=env_steps)
+                    #logger.log("replay_buffer/length", len(replay_buffer), step=env_steps)
                     sum_reward[i] = 0
 
         # update current_obs, current_info and sum_reward
@@ -214,8 +214,8 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
         # save model per episode
         if total_steps % (save_every_steps//num_envs) == 0:
             print(colorama.Fore.GREEN + f"Saving model at total steps {total_steps}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), f"ckpt/{args.n}/world_model_{total_steps}.pth")
-            torch.save(agent.state_dict(), f"ckpt/{args.n}/agent_{total_steps}.pth")
+            torch.save(world_model.state_dict(), f"{args.log_dir}/world_model_{total_steps}.pth")
+            torch.save(agent.state_dict(), f"{args.log_dir}/agent_{total_steps}.pth")
 
 
 def build_world_model(conf, action_dim):
@@ -254,11 +254,11 @@ if __name__ == "__main__":
 
     # parse arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("-n", type=str, required=True)
     parser.add_argument("-seed", type=int, required=True)
     parser.add_argument("-config_path", type=str, required=True)
     parser.add_argument("-env_name", type=str, required=True)
     parser.add_argument("-trajectory_path", type=str, required=True)
+    parser.add_argument("-log_dir", type=str, required=True)
     args = parser.parse_args()
     conf = load_config(args.config_path)
     print(colorama.Fore.RED + str(args) + colorama.Style.RESET_ALL)
@@ -266,9 +266,9 @@ if __name__ == "__main__":
     # set seed
     seed_np_torch(seed=args.seed)
     # tensorboard writer
-    logger = Logger(path=f"runs/{args.n}")
+    logger = Logger(path=f"{args.log_dir}/")
     # copy config file
-    shutil.copy(args.config_path, f"runs/{args.n}/config.yaml")
+    shutil.copy(args.config_path, f"{args.log_dir}/config.yaml")
 
     # distinguish between tasks, other debugging options are removed for simplicity
     if conf.Task == "JointTrainAgent":
@@ -279,6 +279,13 @@ if __name__ == "__main__":
         # build world model and agent
         world_model = build_world_model(conf, action_dim)
         agent = build_agent(conf, action_dim)
+        # print the total number of parameters
+        world_model_params = sum(p.numel() for p in world_model.parameters())
+        agent_params = sum(p.numel() for p in agent.parameters())
+        total_params = world_model_params + agent_params
+        print(f"Total number of world model parameters: {world_model_params}")
+        print(f"Total number of agent parameters: {agent_params}")
+        print(f"Total number of parameters: {total_params}")
 
         # build replay buffer
         if conf.Models.WorldModel.EncoderType == "cnn":
