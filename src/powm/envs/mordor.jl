@@ -10,7 +10,7 @@ import Pkg
 # Pkg.add("Colors")
 # Pkg.add("GLMakie")
 # Pkg.add("ImageDraw")
-#Pkg.add("DataStructures")
+# Pkg.add("DataStructures")
 import POMDPs
 import POMDPModels
 import Distributions
@@ -24,7 +24,6 @@ using Distributions
 using Random
 using Distributions: VonMises
 using DataStructures
-
 
 using Images
 using ImageView
@@ -595,16 +594,165 @@ function POMDPs.action(policy::AStarRolloutPolicy, s)
     end
 end
 
+# Create grid value policy
+struct GridValuePolicy{P} <: Policy
+    pomdp::P
+    grid_size::Int
+    value_grid::Matrix{Float64}
+    policy_grid::Matrix{Int}
+    
+    function GridValuePolicy(pomdp::P, grid_size::Int=100) where P
+        value_grid, policy_grid = compute_value_iteration(pomdp, grid_size)
+        new{P}(pomdp, grid_size, value_grid, policy_grid)
+    end
+end
+
+function compute_value_iteration(pomdp::MordorHikePOMDP, grid_size::Int; 
+                                epsilon::Float64=1e-6, max_iter::Int=10000)
+    # Initialize value and policy grids
+    value_grid = fill(-Inf, grid_size, grid_size)
+    policy_grid = zeros(Int, grid_size, grid_size)
+    
+    # Create world coordinate mappings
+    x_coords = range(pomdp.map_lower_bound[1], pomdp.map_upper_bound[1], length=grid_size)
+    y_coords = range(pomdp.map_lower_bound[2], pomdp.map_upper_bound[2], length=grid_size)
+    
+    # Value iteration
+    for iter in 1:max_iter
+        delta = 0.0
+        value_grid_old = copy(value_grid)
+        
+        for i in 1:grid_size, j in 1:grid_size
+            
+            pos = [x_coords[i], y_coords[j]]
+            current_value = value_grid[i, j]
+            max_value = -Inf
+            best_action = 1
+            
+            # Try each action
+            for action in 1:4
+                value = 0.0
+                
+                # Compute next position based on action
+                move = if action == 1
+                    [0.0, pomdp.translate_step]  # North
+                elseif action == 2
+                    [0.0, -pomdp.translate_step] # South
+                elseif action == 3
+                    [pomdp.translate_step, 0.0]  # East
+                else
+                    [-pomdp.translate_step, 0.0] # West
+                end
+                
+                next_pos = clamp.(pos + move, pomdp.map_lower_bound, pomdp.map_upper_bound)
+                next_i = argmin(abs.(x_coords .- next_pos[1]))
+                next_j = argmin(abs.(y_coords .- next_pos[2]))
+                
+                # Compute reward and next value
+                next_state = [next_pos..., 0.0]
+                r = reward(pomdp, next_state, 0, next_state)
+                if value_grid[next_i, next_j] == -Inf
+                    value = r
+                else
+                    value = r + pomdp.discount * value_grid_old[next_i, next_j]
+                end
+                
+                if value > max_value
+                    max_value = value
+                    best_action = action
+                end
+            end
+            
+            value_grid[i, j] = max_value
+            policy_grid[i, j] = best_action
+            delta = max(delta, abs(max_value - current_value))
+        end
+        
+        
+        if delta < epsilon
+            break
+        end
+    end
+    
+    return value_grid, policy_grid
+end
+
+function POMDPs.action(policy::GridValuePolicy, s)
+    # Convert state position to grid indices
+    x_norm = (s[1] - policy.pomdp.map_lower_bound[1]) / 
+             (policy.pomdp.map_upper_bound[1] - policy.pomdp.map_lower_bound[1])
+    y_norm = (s[2] - policy.pomdp.map_lower_bound[2]) / 
+             (policy.pomdp.map_upper_bound[2] - policy.pomdp.map_lower_bound[2])
+    
+    i = round(Int, x_norm * (policy.grid_size - 1)) + 1
+    j = round(Int, y_norm * (policy.grid_size - 1)) + 1
+    
+    # Clamp indices to valid range
+    i = clamp(i, 1, policy.grid_size)
+    j = clamp(j, 1, policy.grid_size)
+    
+    # Get the grid policy action
+    grid_action = policy.policy_grid[i, j]
+    
+    # Get current orientation vectors
+    theta = s[3]
+    forward = [cos(theta), sin(theta)]
+    lateral = [-sin(theta), cos(theta)]
+    
+    # Get direction vector based on grid action
+    action_vec = if grid_action == 1
+        [0.0, 1.0]  # North
+    elseif grid_action == 2
+        [0.0, -1.0] # South
+    elseif grid_action == 3
+        [1.0, 0.0]  # East
+    else
+        [-1.0, 0.0] # West
+    end
+    
+    # Calculate dot products with action vector
+    forward_alignment = dot(normalize(action_vec), forward)
+    lateral_alignment = dot(normalize(action_vec), lateral)
+    
+    # Choose action based on alignment
+    if abs(forward_alignment) > abs(lateral_alignment)
+        return forward_alignment > 0 ? 1 : 2  # Forward or backward
+    else
+        return lateral_alignment > 0 ? 3 : 4  # Right or left
+    end
+end
 
 #play_interactive()
 
 
-pomdp = MordorHikePOMDP(Val(:medium))
-# Define solvers
 
+pomdp = MordorHikePOMDP(Val(:hard))
+
+# Run a few Rollout policy and display paths
+println("\nRunning Rollout demonstrations...")
+astar_policy = GridValuePolicy(pomdp, 100)
+mdp = UnderlyingMDP(pomdp)
+hr = HistoryRecorder(max_steps=get_horizon(pomdp))
+
+# Run a few rollouts
+for i in 1:5
+    hist = simulate(hr, mdp, astar_policy)
+    path = [s[1:2] for (s, b, a, r, sp, o) in hist]
+    last_state = hist[end][1]
+    display(render(pomdp, last_state, path=path))
+    sleep(2.0)
+end
+
+
+
+# Define solvers
 policy = Dict(
-    #"POMCPOW (deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=100000, max_depth=100), pomdp),
-    "A* Rollout" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 40))), pomdp),
+    # "POMCPOW (Random - deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=20), pomdp),
+    # "POMCPOW (Random)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100))), pomdp),
+    # "POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100))), pomdp),
+    "POMCPOW (A*)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 100))), pomdp),
+    # "Value Iteration - Tree" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100)), tree_queries=10000,max_depth=10), pomdp),
+
     #"POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
     #"POMCPOW - GoToGoalPolicy" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10, estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
     #"Random" => RandomPolicy(pomdp)
@@ -620,7 +768,7 @@ for (policy_name, planner) in policy
     returns = []
     scores = []
     lengths = []
-    for i in 1:10
+    for i in 1:20
         hist = simulate(hr, pomdp, planner) 
         push!(returns, discounted_reward(hist))
         push!(scores, sum(r for (s, b, a, r, sp, o) in hist))
