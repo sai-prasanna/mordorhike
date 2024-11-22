@@ -601,8 +601,8 @@ struct GridValuePolicy{P} <: Policy
     value_grid::Matrix{Float64}
     policy_grid::Matrix{Int}
     
-    function GridValuePolicy(pomdp::P, grid_size::Int=100) where P
-        value_grid, policy_grid = compute_value_iteration(pomdp, grid_size)
+    function GridValuePolicy(pomdp::P, grid_size::Int=100, max_iter::Int=10000) where P
+        value_grid, policy_grid = compute_value_iteration(pomdp, grid_size, max_iter=max_iter)
         new{P}(pomdp, grid_size, value_grid, policy_grid)
     end
 end
@@ -631,7 +631,6 @@ function compute_value_iteration(pomdp::MordorHikePOMDP, grid_size::Int;
             
             # Try each action
             for action in 1:4
-                value = 0.0
                 
                 # Compute next position based on action
                 move = if action == 1
@@ -651,12 +650,11 @@ function compute_value_iteration(pomdp::MordorHikePOMDP, grid_size::Int;
                 # Compute reward and next value
                 next_state = [next_pos..., 0.0]
                 r = reward(pomdp, next_state, 0, next_state)
-                if value_grid[next_i, next_j] == -Inf
-                    value = r
+                if r == 0.0
+                    value = 0.0
                 else
                     value = r + pomdp.discount * value_grid_old[next_i, next_j]
                 end
-                
                 if value > max_value
                     max_value = value
                     best_action = action
@@ -726,17 +724,27 @@ end
 
 
 
-pomdp = MordorHikePOMDP(Val(:hard))
+pomdp = MordorHikePOMDP(Val(:medium))
 
 # Run a few Rollout policy and display paths
 println("\nRunning Rollout demonstrations...")
-astar_policy = GridValuePolicy(pomdp, 100)
+rollout_demo_policy = GridValuePolicy(pomdp, 20, 20)
+
+# display heatmap of value grid without Plots
+using GLMakie
+fig = Figure()
+ax = Axis(fig[1,1], title="Value Grid")
+value_grid = rollout_demo_policy.value_grid
+heatmap!(ax, value_grid, colormap=:viridis)
+display(fig)
+sleep(2.0)
+
 mdp = UnderlyingMDP(pomdp)
 hr = HistoryRecorder(max_steps=get_horizon(pomdp))
 
 # Run a few rollouts
 for i in 1:5
-    hist = simulate(hr, mdp, astar_policy)
+    hist = simulate(hr, mdp, rollout_demo_policy)
     path = [s[1:2] for (s, b, a, r, sp, o) in hist]
     last_state = hist[end][1]
     display(render(pomdp, last_state, path=path))
@@ -748,9 +756,9 @@ end
 # Define solvers
 policy = Dict(
     # "POMCPOW (Random - deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=20), pomdp),
-    # "POMCPOW (Random)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100))), pomdp),
-    # "POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100))), pomdp),
-    "POMCPOW (A*)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 100))), pomdp),
+    # "POMCPOW (Random)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0)), pomdp),
+    "POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 20, 20))), pomdp),
+    # "POMCPOW (A*)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 100))), pomdp),
     # "Value Iteration - Tree" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100)), tree_queries=10000,max_depth=10), pomdp),
 
     #"POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
@@ -787,3 +795,27 @@ for (policy_name, planner) in policy
         Mean and std of lengths: $(mean(lengths)), $(std(lengths))
         """)
 end
+
+# POMCPOW (A*) Policy
+# Mean and std of returns: -35.16663408716645, 10.068539402802525
+# Mean and std of scores: [-46.638096984262816], [16.373940241030596]
+# Mean and std of lengths: 67.95, 18.782620746457695
+
+# POMCPOW (Random) Policy
+# Mean and std of returns: -42.096481268532976, 13.711625159794236
+# Mean and std of scores: [-77.3028166884047], [47.9362375482722]
+# Mean and std of lengths: 117.95, 78.69225535357072
+
+# POMCPOW (Value Iteration) Policy 10
+# Mean and std of returns: -25.834462280278352, 10.753067225659407
+# Mean and std of scores: [-32.06212016467287], [17.178142405819305]
+# Mean and std of lengths: 46.6, 13.880694658788743
+
+# 50
+# Mean and std of returns: -29.180047140704012, 11.089525814068928
+# Mean and std of scores: [-38.22808791535896], [18.334302486900228]
+# Mean and std of lengths: 57.5, 21.29862856963726
+# 200
+# Mean and std of returns: -34.91117746856064, 12.953265900244052
+# Mean and std of scores: [-46.52528544232995], [22.926463249156154]
+# Mean and std of lengths: 66.25, 27.11743467140457
