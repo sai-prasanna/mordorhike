@@ -5,8 +5,12 @@
         "third_party/STORM",
     ],
     "[python]": {
-        "editor.defaultFormatter": "ms-python.black-formatter"
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+        }
     },
     "black-formatter.args": ["--force-exclude", "third_party/**"],
-    "isort.args": ["--force-exclude", "third_party/**"]
+    "isort.args": ["--profile", "black", "--force-exclude", "third_party/**"]
 }
