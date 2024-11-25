@@ -6,8 +6,8 @@ BasicSettings:
   ReplayBufferOnGPU: True
 
 JointTrainAgent:
-  SampleMaxSteps: 102000
-  BufferMaxLength: 100000
+  SampleMaxSteps: 202000
+  BufferMaxLength: 200000
   BufferWarmUp: 1024
   NumEnvs: 1
   BatchSize: 16
@@ -20,22 +20,25 @@ JointTrainAgent:
   TrainDynamicsEverySteps: 1
   TrainAgentEverySteps: 1
   UseDemonstration: False
-  SaveEverySteps: 2500
+  SaveEverySteps: 20000
 
 Models:
   WorldModel:
     InChannels: 3
     TransformerMaxLength: 64
-    TransformerHiddenDim: 512
+    TransformerHiddenDim: 256
     TransformerNumLayers: 2
     TransformerNumHeads: 8
     EncoderType: "mlp"
     InputDim: 1
-    HiddenDim: 512
+    HiddenDim: 256
 
   Agent:
     NumLayers: 2
-    HiddenDim: 512
+    HiddenDim: 256
     Gamma: 0.99
     Lambda: 0.95
     EntropyCoef: 3E-4
+
+Wandb:
+  Project: ""
