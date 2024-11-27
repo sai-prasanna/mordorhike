@@ -115,7 +115,7 @@ class Logger():
         
         if config.Wandb.Project:
             self.wandb = wandb.init(
-                project=config.Wandb.project,
+                project=config.Wandb.Project,
                 group=logdir.parent.name, 
                 name=logdir.name, 
                 config=config,
@@ -236,7 +236,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
     
     # Add frame collection for video logging
     frames_to_log = []
-    log_frequency = 1000 #int(max_steps//num_envs * 0.1)
+    log_frequency = int(max_steps//num_envs * 0.1)
     previous_log_step = -1
 
     for total_steps in tqdm(range(max_steps//num_envs)):
@@ -385,7 +385,7 @@ def main():
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--env_name", type=str, required=True)
     parser.add_argument("--trajectory_path", type=str, required=False)
-    parser.add_argument("--log_dir", type=str, required=True)
+    parser.add_argument("--logdir", type=str, required=True)
     parser.add_argument("--config_path", type=str, required=False, default=default_config)
     args = parser.parse_args()
     conf = load_config(args.config_path)
@@ -394,9 +394,9 @@ def main():
     # set seed
     seed_np_torch(seed=args.seed)
     # tensorboard writer
-    logger = Logger(logdir=Path(args.log_dir), config=conf, video_keys=["epstats/policy_log_image"])
+    logger = Logger(logdir=Path(args.logdir), config=conf, video_keys=["epstats/policy_log_image"])
     # copy config file
-    shutil.copy(args.config_path, f"{args.log_dir}/config.yaml")
+    shutil.copy(args.config_path, f"{args.logdir}/config.yaml")
 
     # distinguish between tasks, other debugging options are removed for simplicity
     if conf.Task == "JointTrainAgent":
