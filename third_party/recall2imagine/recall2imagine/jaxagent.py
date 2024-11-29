@@ -194,6 +194,22 @@ class JAXAgent(embodied.Agent):
       self._init_policy = nj.pmap(self._init_policy, 'i', **kw)
       self._policy = nj.pmap(self._policy, 'i', static=['mode'], **kw)
 
+    # Add multi-step prediction transform
+    self._multi_step_prediction = nj.pure(self.agent.multi_step_prediction)
+    if len(self.policy_devices) == 1:
+      kw = dict(device=self.policy_devices[0])
+      self._multi_step_prediction = nj.jit(
+          self._multi_step_prediction, 
+          static=['prediction_horizon'], 
+          **kw)
+    else:
+      kw = dict(devices=self.policy_devices)
+      self._multi_step_prediction = nj.pmap(
+          self._multi_step_prediction, 
+          'i', 
+          static=['prediction_horizon'], 
+          **kw)
+
   def _convert_inps(self, value, devices):
     if len(devices) == 1:
       value = jax.device_put(value, devices[0])
@@ -256,3 +272,16 @@ class JAXAgent(embodied.Agent):
     for dim in reversed(batch_dims):
       data = {k: np.repeat(v[None], dim, axis=0) for k, v in data.items()}
     return data
+
+  def multi_step_prediction(self, latents, actions, prediction_horizon=5):
+    """Compute multi-step predictions from latents and actions."""
+
+    latents = self._convert_inps(latents, self.policy_devices)
+    actions = self._convert_inps(actions, self.policy_devices)
+    rng = self._next_rngs(self.policy_devices)
+    varibs = self.varibs if self.single_device else self.policy_varibs
+    
+    preds, _ = self._multi_step_prediction(
+        varibs, rng, latents, actions, prediction_horizon=prediction_horizon)
+    preds = self._convert_outs(preds, self.policy_devices)
+    return preds

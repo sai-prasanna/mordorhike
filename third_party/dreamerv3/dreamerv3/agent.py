@@ -630,3 +630,34 @@ class Agent(nj.Module):
       result[key] = value
     result['cont'] = 1.0 - f32(result['is_terminal'])
     return result
+
+  def multi_step_prediction(self, latents, actions, prediction_horizon=5):
+    """Compute multi-step predictions from a trajectory of latents and actions."""
+    self.config.jax.jit and embodied.print(
+        'Tracing multistep prediction function', color='yellow')
+
+    latents['deter'] = cast(latents['deter'])
+    latents['stoch'] = cast(jax.nn.one_hot(
+        latents['stoch'], self.config.dyn.rssm.classes))
+    actions = jaxutils.onehot_dict(actions, self.act_space)
+    
+    def img_step_pred(carry, action):
+      new_carry = jax.vmap(lambda p_lat: self.dyn.imagine(p_lat, action, bdims=1)[0], in_axes=1, out_axes=1)(carry)
+      decoded_pred = {k: v.mode() for k, v in self.dec(new_carry).items()}
+      return new_carry, decoded_pred
+    
+    def compute_step_predictions(step):
+      # Get starting latent and actions for this step
+      img_start = {k: v[:, step] for k, v in latents.items()}
+      
+      actions_slice = treemap(lambda v: lax.dynamic_slice_in_dim(v, step, prediction_horizon, axis=1), actions)
+      # scan over the actions and decode the predictions
+      
+      _, decoded_preds = jaxutils.scan(img_step_pred, img_start, actions_slice, axis=1)
+      return decoded_preds
+    
+    valid_steps = latents['deter'].shape[1] - prediction_horizon
+    predictions = jax.vmap(compute_step_predictions, out_axes=1)(
+        jnp.arange(valid_steps))
+
+    return predictions

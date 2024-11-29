@@ -63,7 +63,7 @@ def make_logger(logdir, step, config, metric_dir=None):
     logdir = config_logdir
     if metric_dir:
         logdir = logdir / metric_dir
-        logdir.mkdir()
+        logdir.mkdirs()
 
     loggers = [
         embodied.logger.TerminalOutput(config.filter),

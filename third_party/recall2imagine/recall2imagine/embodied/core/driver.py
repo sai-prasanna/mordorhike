@@ -36,12 +36,12 @@ class Driver:
   def on_episode(self, callback):
     self._on_episodes.append(callback)
 
-  def __call__(self, policy, steps=0, episodes=0):
+  def __call__(self, policy, steps=0, episodes=0, record_state=False):
     step, episode = 0, 0
     while step < steps or episode < episodes:
-      step, episode = self._step(policy, step, episode)
+      step, episode = self._step(policy, step, episode, record_state)
 
-  def _step(self, policy, step, episode):
+  def _step(self, policy, step, episode, record_state=False):
     assert all(len(x) == len(self._env) for x in self._acts.values())
     acts = {k: v for k, v in self._acts.items() if not k.startswith('log_')}
     obs = self._env.step(acts)
@@ -55,6 +55,8 @@ class Driver:
     acts['reset'] = obs['is_last'].copy()
     self._acts = acts
     trns = {**obs, **acts}
+    if record_state:
+      trns.update(self._state[0][0])
     if obs['is_first'].any():
       for i, first in enumerate(obs['is_first']):
         if first:

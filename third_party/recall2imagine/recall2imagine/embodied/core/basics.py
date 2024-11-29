@@ -17,6 +17,7 @@ CONVERSION = {
     np.signedinteger: np.int64,
     np.uint8: np.uint8,
     bool: bool,
+    np.complex64: np.complex64
 }
 
 

@@ -116,6 +116,26 @@ class Agent(nj.Module):
     obs['cont'] = 1.0 - obs['is_terminal'].astype(jnp.float32)
     return obs
 
+  def multi_step_prediction(self, latents, actions, prediction_horizon=5):
+    """Compute multi-step predictions from latent states and actions."""
+    self.config.jax.jit and print('Tracing multistep prediction function')
+
+    def compute_step_predictions(step):
+      # Get starting latent and actions for this step
+      img_start = {k: v[:, step] for k, v in latents.items()}
+      actions_slice = tree_map(
+          lambda v: jax.lax.dynamic_slice_in_dim(
+              v, step, prediction_horizon, axis=1),
+          actions)
+      preds = self.wm.rssm.imagine(actions_slice['action'], img_start)
+      decoded_preds = {k: v.mode() for k, v in self.wm.heads['decoder'](preds).items()}
+      return decoded_preds
+
+    valid_steps = latents['deter'].shape[1] - prediction_horizon
+    predictions = jax.vmap(
+        compute_step_predictions, out_axes=1)(jnp.arange(valid_steps))
+    return predictions
+
 
 class WorldModel(nj.Module):
 

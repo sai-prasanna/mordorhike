@@ -342,6 +342,10 @@ class JAXAgent(embodied.Agent):
       _, mets = pure(params, data, seed=seed)
       return mets
 
+    def multi_step_prediction(params, latents, actions, seed, prediction_horizon):
+      pure = nj.pure(self.agent.multi_step_prediction)
+      return pure(params, latents, actions, prediction_horizon, seed=seed)[1]
+
     from jax.experimental.shard_map import shard_map
     s = jax.sharding.PartitionSpec('i')  # sharded
     m = jax.sharding.PartitionSpec()     # mirrored
@@ -353,6 +357,9 @@ class JAXAgent(embodied.Agent):
           lambda params, obs, carry, seed: fn(params, obs, carry, seed, mode),
           self.policy_mesh, (m, s, s, s), s, check_rep=False)(
               params, obs, carry, seed)
+      multi_step_prediction = lambda params, latents, actions, seed, prediction_horizon, fn=multi_step_prediction: shard_map(
+          lambda params, latents, actions, seed, prediction_horizon: fn(params, latents, actions, seed, prediction_horizon),
+          self.policy_mesh, (m, s, s, s), s, check_rep=False)(params, latents, actions, seed, prediction_horizon)
     if len(self.train_mesh.devices) > 1:
       init_train = lambda params, seed, batch_size, fn=init_train: shard_map(
           lambda params, seed: fn(params, seed, batch_size),
@@ -383,7 +390,10 @@ class JAXAgent(embodied.Agent):
     self._report = jax.jit(
         report, (tm, ts, ts, ts), (tm, ts))
     self._report_wm_prediction_error = jax.jit(
-        report_wm_prediction_error, (tm, ts, ts), tm)
+        report_wm_prediction_error, (tm, ts, ts), ts)
+
+    self._multi_step_prediction = jax.jit(
+        multi_step_prediction, (pm, ps, ps, ps), ps, static_argnames=['prediction_horizon'])
 
   def _take_mets(self, mets):
     mets = jax.tree.map(lambda x: x.__array__(), mets)
@@ -452,6 +462,21 @@ class JAXAgent(embodied.Agent):
     data = jax.device_put(data, self.train_sharded)
     seed = self._next_seeds(self.train_sharded)
     self._report_wm_prediction_error = self._report_wm_prediction_error.lower(self.params, data, seed)
+
+  def multi_step_prediction(self, latents, actions, prediction_horizon=5):
+    """Compute multi-step predictions from latents and actions."""
+    self.config.jax.jit and embodied.print(
+        'Tracing multi_step_prediction function', color='yellow')
+
+    with self.policy_lock:
+      latents, actions = jax.device_put(
+          (latents, actions), self.policy_sharded)
+      seed = self._next_seeds(self.policy_sharded)
+      preds = self._multi_step_prediction(
+          self.policy_params, latents, actions, seed, prediction_horizon)
+
+    preds = self._take_outs(fetch_async(preds))
+    return preds
 
 def fetch_async(value):
   with jax._src.config.explicit_device_get_scope():
