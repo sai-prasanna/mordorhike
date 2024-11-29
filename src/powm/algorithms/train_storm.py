@@ -5,9 +5,7 @@ import cv2
 import numpy as np
 from einops import rearrange
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from collections import deque
+from collections import deque, defaultdict
 from tqdm import tqdm
 import copy
 import colorama
@@ -18,9 +16,11 @@ import pickle
 import os
 import wandb
 from pathlib import Path
-from dreamerv3.embodied.core.logger import _encode_gif
+from dreamerv3.embodied.core import logger as embodied_logger
+from .train_dreamer import VideoOutput
+from dreamerv3 import embodied
 
-from storm_wm.utils import seed_np_torch, Logger
+from storm_wm.utils import seed_np_torch
 from storm_wm.replay_buffer import ReplayBuffer
 from storm_wm import env_wrapper
 from storm_wm import agents
@@ -29,24 +29,7 @@ from storm_wm.sub_models.world_models import WorldModel, MSELoss
 from yacs.config import CfgNode as CN
 
 
-class EpisodeFrameCounter(gymnasium.Wrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        self.frame_count = 0
 
-    def reset(self, **kwargs):
-        self.frame_count = 0
-        obs, info = self.env.reset(**kwargs)
-        info["episode_frame_number"] = self.frame_count
-        return obs, info
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        self.frame_count += 1
-        info["episode_frame_number"] = self.frame_count
-        if terminated or truncated:
-            self.frame_count = 0
-        return obs, reward, terminated, truncated, info
 
 def load_config(config_path):
     conf = CN()
@@ -104,62 +87,25 @@ def load_config(config_path):
 
     return conf
 
-class Logger():
-    def __init__(self, logdir: Path, config, video_keys) -> None:
-        self.path = logdir
-        self.writer = SummaryWriter(logdir=logdir, flush_secs=1)
-        self.json_path = logdir / "metrics.jsonl"
-        self.videos_path = logdir / "videos"
-        self.videos_path.mkdir(exist_ok=True)
-        self.video_keys = video_keys
-        
-        if config.Wandb.Project:
-            self.wandb = wandb.init(
+def make_logger(logdir: Path, config):
+    logdir.mkdir(parents=True, exist_ok=True)
+    loggers = [
+        embodied_logger.TerminalOutput(),
+        embodied_logger.JSONLOutput(logdir, "metrics.jsonl"),
+        embodied_logger.TensorBoardOutput(logdir),
+        VideoOutput(logdir, fps=20),
+        embodied_logger.WandBOutput(
+            wandb_init_kwargs=dict(
                 project=config.Wandb.Project,
-                group=logdir.parent.name, 
-                name=logdir.name, 
-                config=config,
-                dir=logdir
+                group=logdir.parent.name,
+                name=logdir.name,
+                config=dict(config),
+                dir=logdir,
             )
-        else:
-            self.wandb = None
-        
-        self.tag_step = {}
-
-    def log(self, tag, value, step=None):
-        if step is None:
-            if tag not in self.tag_step:
-                self.tag_step[tag] = 0
-            else:
-                self.tag_step[tag] += 1
-            step = self.tag_step[tag]
-
-        if tag in self.video_keys:
-            self.writer.add_video(tag, value, step, fps=15, dataformats="NTHWC")
-            if self.wandb:
-                self.wandb.log({tag: wandb.Video(value, fps=15)}, step=step)
-            try:
-                if isinstance(value, np.ndarray) and len(value.shape) == 5:
-                    gif_bytes = _encode_gif(value[0], fps=15)
-                    gif_path = self.videos_path / f"{step:06d}_{tag.replace('/', '_')}.gif"
-                    with open(gif_path, "wb") as f:
-                        f.write(gif_bytes)
-            except Exception as e:
-                print(f"Error saving GIF for {tag}: {e}")
-        elif "images" in tag:
-            self.writer.add_images(tag, value, step)
-            if self.wandb:
-                self.wandb.log({tag: wandb.Image(value)}, step=step)
-        elif "hist" in tag:
-            self.writer.add_histogram(tag, value, step)
-            if self.wandb:
-                self.wandb.log({tag: wandb.Histogram(value)}, step=step)
-        else:
-            self.writer.add_scalar(tag, value, step)
-            if self.wandb:
-                self.wandb.log({tag: value}, step=step)
-            with open(self.json_path, "a") as f:
-                f.write(json.dumps({"step": step, tag: value}) + "\n")
+        ) if config.Wandb.Project else None,
+    ]
+    loggers = [x for x in loggers if x is not None]
+    return embodied_logger.Logger(embodied.Counter(), loggers)
 
 def build_single_env(env_name, image_size, seed, index=0):
     env_seed = hash((seed, index)) % (2 ** 32 - 1)
@@ -171,9 +117,8 @@ def build_single_env(env_name, image_size, seed, index=0):
         env = env_wrapper.LifeLossInfo(env)
     else:
         env = gymnasium.make(env_name, render_mode="rgb_array")
-        env = env_wrapper.SeedEnvWrapper(env, seed=env_seed)
+        env.reset(seed=env_seed)
         env = gymnasium.wrappers.TransformObservation(env, lambda obs: obs['vector'], observation_space=env.observation_space.spaces['vector'])
-        env = EpisodeFrameCounter(env)
     return env
 
 
@@ -189,7 +134,8 @@ def build_vec_env(env_name, image_size, num_envs, seed):
 
 def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel, batch_size, demonstration_batch_size, batch_length, logger):
     obs, action, reward, termination = replay_buffer.sample(batch_size, demonstration_batch_size, batch_length)
-    world_model.update(obs, action, reward, termination, logger=logger)
+    metrics = world_model.update(obs, action, reward, termination)
+    logger.add(metrics, prefix="train")
 
 
 @torch.no_grad()
@@ -206,19 +152,19 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
 
     sample_obs, sample_action, sample_reward, sample_termination = replay_buffer.sample(
         imagine_batch_size, imagine_demonstration_batch_size, imagine_context_length)
-    latent, action, reward_hat, termination_hat = world_model.imagine_data(
+    latent, action, reward_hat, termination_hat, logged_video = world_model.imagine_data(
         agent, sample_obs, sample_action,
         imagine_batch_size=imagine_batch_size+imagine_demonstration_batch_size,
         imagine_batch_length=imagine_batch_length,
         log_video=log_video,
-        logger=logger
     )
+    if logged_video is not None:
+        logger.video("Imagine/predict_video", logged_video)
     return latent, action, None, None, reward_hat, termination_hat
 
 
 def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
-                                  replay_buffer: ReplayBuffer,
-                                  world_model: WorldModel, agent: agents.ActorCriticAgent,
+                                  replay_buffer, world_model, agent,
                                   train_dynamics_every_steps, train_agent_every_steps,
                                   batch_size, demonstration_batch_size, batch_length,
                                   imagine_batch_size, imagine_demonstration_batch_size,
@@ -229,21 +175,21 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
     print("Current env: " + colorama.Fore.YELLOW + f"{env_name}" + colorama.Style.RESET_ALL)
 
     # reset envs and variables
-    sum_reward = np.zeros(num_envs)
-    current_obs, current_info = vec_env.reset()
+    current_obs, _ = vec_env.reset()
     context_obs = deque(maxlen=16)
     context_action = deque(maxlen=16)
     
     # Add frame collection for video logging
-    frames_to_log = []
-    log_frequency = int(max_steps//num_envs * 0.1)
-    previous_log_step = -1
+    log_frequency = 1000 #int(max_steps//num_envs * 0.1)
+
+    agg = embodied.Agg()
+    epstats = embodied.Agg()
+    episodes = defaultdict(embodied.Agg)
+    
+    should_log = embodied.when.Every(1000)
+    
 
     for total_steps in tqdm(range(max_steps//num_envs)):
-        # Collect frames for video
-        frames = vec_env.render()
-        frames_to_log.append(frames[0])
-
         # Rest of your existing sampling code...
         if replay_buffer.ready():
             world_model.eval()
@@ -270,30 +216,35 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
 
         obs, reward, done, truncated, info = vec_env.step(action)
         replay_buffer.append(current_obs, action, reward, np.logical_or(done, info.get("life_loss", False)))
-
         done_flag = np.logical_or(done, truncated)
-        if done_flag.any():
-            for i in range(num_envs):
-                if done_flag[i]:
-                    env_steps = total_steps * num_envs + i
-                    logger.log(f"episode/score", sum_reward[i], step=env_steps)
-                    frame_skip = 4 if env_name.startswith("ALE/") else 1 # frameskip=4 for Atari
-                    logger.log(f"episode/length", int(current_info["episode_frame_number"][i]//frame_skip), step=env_steps)
-                    logger.log("replay_buffer/length", len(replay_buffer), step=env_steps)
-                    # Log video when episode ends and we have collected frames
-                    if i == 0:
-                        if env_steps - previous_log_step >= log_frequency:
-                            frames = np.stack(frames_to_log)[np.newaxis, ...]
-                            logger.log(f"epstats/policy_log_image", frames, step=env_steps)
-                            previous_log_step = env_steps
-                        frames_to_log = []
-                    sum_reward[i] = 0
-
+        frames = vec_env.render()
+        
+        for i in range(num_envs):
+            episode = episodes[i]
+            episode.add('score', reward[i], agg='sum')
+            episode.add('length', 1, agg='sum')
+            if i == 0:
+                episode.add('policy_log_image', frames[i], agg='stack')
+            if done_flag[i]:
+                result = episode.result()
+                # discounted return
+                # compute the discounted return using gamma
+                logger.add({
+                    'score': result.pop('score'),
+                    'length': result.pop('length'),
+                }, prefix='episode')
+                
+                epstats.add(result)
+                episode.reset()
+            logger.step += 1
+        
         # update current_obs, current_info and sum_reward
-        sum_reward += reward
         current_obs = obs
-        current_info = info
-        # <<< sample part
+        
+        if should_log(logger.step):
+            logger.add(epstats.result(), prefix='epstats')
+            logger.add(agg.result(), prefix='agg')
+            logger.write()
 
         # train world model part >>>
         if replay_buffer.ready() and total_steps % (train_dynamics_every_steps//num_envs) == 0:
@@ -326,22 +277,22 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
                 logger=logger
             )
 
-            agent.update(
+            metrics = agent.update(
                 latent=imagine_latent,
                 action=agent_action,
                 old_logprob=agent_logprob,
                 old_value=agent_value,
                 reward=imagine_reward,
                 termination=imagine_termination,
-                logger=logger
             )
+            logger.add(metrics, prefix="train")
         # <<< train agent part
 
         # save model per episode
-        if total_steps % (save_every_steps//num_envs) == 0:
-            print(colorama.Fore.GREEN + f"Saving model at total steps {total_steps}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), logger.path/f"world_model_{total_steps}.pth")
-            torch.save(agent.state_dict(), logger.path/f"agent_{total_steps}.pth")
+        if logger.step % save_every_steps == 0:
+            print(colorama.Fore.GREEN + f"Saving model at total steps {logger.step}" + colorama.Style.RESET_ALL)
+            torch.save(world_model.state_dict(), logger.path/f"world_model_{logger.step}.pth")
+            torch.save(agent.state_dict(), logger.path/f"agent_{logger.step}.pth")
 
 
 def build_world_model(conf, action_dim):
@@ -394,7 +345,7 @@ def main():
     # set seed
     seed_np_torch(seed=args.seed)
     # tensorboard writer
-    logger = Logger(logdir=Path(args.logdir), config=conf, video_keys=["epstats/policy_log_image"])
+    logger = make_logger(logdir=Path(args.logdir), config=conf)
     # copy config file
     shutil.copy(args.config_path, f"{args.logdir}/config.yaml")
 

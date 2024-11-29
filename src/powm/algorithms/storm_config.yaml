@@ -6,7 +6,7 @@ BasicSettings:
   ReplayBufferOnGPU: True
 
 JointTrainAgent:
-  SampleMaxSteps: 1000000
+  SampleMaxSteps: 500000
   BufferMaxLength: 500000
   BufferWarmUp: 1024
   NumEnvs: 1
@@ -20,7 +20,7 @@ JointTrainAgent:
   TrainDynamicsEverySteps: 1
   TrainAgentEverySteps: 1
   UseDemonstration: False
-  SaveEverySteps: 100000
+  SaveEverySteps: 5000
 
 Models:
   WorldModel:
@@ -41,4 +41,4 @@ Models:
     EntropyCoef: 3E-4
 
 Wandb:
-  Project: "powm"
+  Project: ""

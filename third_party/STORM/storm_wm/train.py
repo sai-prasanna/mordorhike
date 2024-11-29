@@ -74,7 +74,9 @@ def build_vec_env(env_name, image_size, num_envs, seed):
 
 def train_world_model_step(replay_buffer: ReplayBuffer, world_model: WorldModel, batch_size, demonstration_batch_size, batch_length, logger):
     obs, action, reward, termination = replay_buffer.sample(batch_size, demonstration_batch_size, batch_length)
-    world_model.update(obs, action, reward, termination, logger=logger)
+    metrics = world_model.update(obs, action, reward, termination)
+    for k, v in metrics.items():
+        logger.log(k, v)
 
 
 @torch.no_grad()
@@ -91,13 +93,14 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
 
     sample_obs, sample_action, sample_reward, sample_termination = replay_buffer.sample(
         imagine_batch_size, imagine_demonstration_batch_size, imagine_context_length)
-    latent, action, reward_hat, termination_hat = world_model.imagine_data(
+    latent, action, reward_hat, termination_hat, logged_video = world_model.imagine_data(
         agent, sample_obs, sample_action,
         imagine_batch_size=imagine_batch_size+imagine_demonstration_batch_size,
         imagine_batch_length=imagine_batch_length,
         log_video=log_video,
-        logger=logger
     )
+    if logged_video is not None:
+        logger.video("Imagine/predict_video", logged_video)
     return latent, action, None, None, reward_hat, termination_hat
 
 
@@ -198,15 +201,16 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
                 logger=logger
             )
 
-            agent.update(
+            metrics = agent.update(
                 latent=imagine_latent,
                 action=agent_action,
                 old_logprob=agent_logprob,
                 old_value=agent_value,
                 reward=imagine_reward,
                 termination=imagine_termination,
-                logger=logger
             )
+            for k, v in metrics.items():
+                logger.log(k, v)
         # <<< train agent part
 
         # save model per episode
