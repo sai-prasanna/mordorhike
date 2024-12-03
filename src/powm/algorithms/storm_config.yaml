@@ -44,7 +44,8 @@ defaults:
     imagine_batch_length: 16
     train_dynamics_every_steps: 1
     train_agent_every_steps: 1
-    save_every_steps: 5000
+    save_every: 50000
+    log_every: 5000
     demonstration_path: ""
 
   # Wandb Settings

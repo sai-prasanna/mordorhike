@@ -102,7 +102,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
                                   batch_size, demonstration_batch_size, batch_length,
                                   imagine_batch_size, imagine_demonstration_batch_size,
                                   imagine_context_length, imagine_batch_length,
-                                  save_every_steps, seed, logger, ckpt_path):
+                                  save_every, log_every, seed, logger, ckpt_path):
 
     vec_env = build_vec_env(env_name, num_envs=num_envs, seed=seed, env_kwargs=env_kwargs)
     print("Current env: " + colorama.Fore.YELLOW + f"{env_name}" + colorama.Style.RESET_ALL)
@@ -113,13 +113,12 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
     context_action = deque(maxlen=16)
     
     # Add frame collection for video logging
-    log_frequency = 1000 #int(max_steps//num_envs * 0.1)
 
     agg = embodied.Agg()
     epstats = embodied.Agg()
     episodes = defaultdict(embodied.Agg)
     
-    should_log = embodied.when.Every(log_frequency)
+    should_log = embodied.when.Every(log_every)
     
 
     for total_steps in tqdm(range(max_steps//num_envs)):
@@ -222,7 +221,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
         # <<< train agent part
 
         # save model per episode
-        if logger.step % save_every_steps == 0:
+        if logger.step % save_every == 0:
             print(colorama.Fore.GREEN + f"Saving model at total steps {logger.step}" + colorama.Style.RESET_ALL)
             torch.save(world_model.state_dict(), ckpt_path/f"world_model_{logger.step}.pth")
             torch.save(agent.state_dict(), ckpt_path/f"agent_{logger.step}.pth")
@@ -345,7 +344,8 @@ def main(argv=None):
         imagine_demonstration_batch_size=config.train.imagine_demonstration_batch_size if config.train.demonstration_path else 0,
         imagine_context_length=config.train.imagine_context_length,
         imagine_batch_length=config.train.imagine_batch_length,
-        save_every_steps=config.train.save_every_steps,
+        save_every=config.train.save_every,
+        log_every=config.train.log_every,
         seed=config.seed,
         logger=logger,
         ckpt_path=ckpt_path
