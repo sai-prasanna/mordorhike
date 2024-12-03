@@ -1,94 +1,27 @@
 import gymnasium
 import argparse
 from tensorboardX import SummaryWriter
-import cv2
 import numpy as np
 from einops import rearrange
 import torch
 from collections import deque, defaultdict
 from tqdm import tqdm
-import copy
+
 import colorama
-import random
-import json
-import shutil
-import pickle
-import os
-import wandb
-from pathlib import Path
 from dreamerv3.embodied.core import logger as embodied_logger
 from .train_dreamer import VideoOutput
 from dreamerv3 import embodied
+import ruamel.yaml as yaml
 
 from storm_wm.utils import seed_np_torch
 from storm_wm.replay_buffer import ReplayBuffer
 from storm_wm import env_wrapper
 from storm_wm import agents
-from storm_wm.sub_models.functions_losses import symexp
-from storm_wm.sub_models.world_models import WorldModel, MSELoss
-from yacs.config import CfgNode as CN
+from storm_wm.sub_models.world_models import WorldModel
 
 
 
-
-def load_config(config_path):
-    conf = CN()
-    # Task need to be RandomSample/TrainVQVAE/TrainWorldModel
-    conf.Task = ""
-
-    conf.BasicSettings = CN()
-    conf.BasicSettings.Seed = 0
-    conf.BasicSettings.ImageSize = 0
-    conf.BasicSettings.ReplayBufferOnGPU = False
-
-    # Under this setting, input 128*128 -> latent 16*16*64
-    conf.Models = CN()
-
-    conf.Models.WorldModel = CN()
-    conf.Models.WorldModel.InChannels = 0
-    conf.Models.WorldModel.TransformerMaxLength = 0
-    conf.Models.WorldModel.TransformerHiddenDim = 0
-    conf.Models.WorldModel.TransformerNumLayers = 0
-    conf.Models.WorldModel.TransformerNumHeads = 0
-    conf.Models.WorldModel.EncoderType = ""
-    conf.Models.WorldModel.InputDim = 0
-    conf.Models.WorldModel.HiddenDim = 0
-
-    conf.Models.Agent = CN()
-    conf.Models.Agent.NumLayers = 0
-    conf.Models.Agent.HiddenDim = 256
-    conf.Models.Agent.Gamma = 1.0
-    conf.Models.Agent.Lambda = 0.0
-    conf.Models.Agent.EntropyCoef = 0.0
-
-    conf.JointTrainAgent = CN()
-    conf.JointTrainAgent.SampleMaxSteps = 0
-    conf.JointTrainAgent.BufferMaxLength = 0
-    conf.JointTrainAgent.BufferWarmUp = 0
-    conf.JointTrainAgent.NumEnvs = 0
-    conf.JointTrainAgent.BatchSize = 0
-    conf.JointTrainAgent.DemonstrationBatchSize = 0
-    conf.JointTrainAgent.BatchLength = 0
-    conf.JointTrainAgent.ImagineBatchSize = 0
-    conf.JointTrainAgent.ImagineDemonstrationBatchSize = 0
-    conf.JointTrainAgent.ImagineContextLength = 0
-    conf.JointTrainAgent.ImagineBatchLength = 0
-    conf.JointTrainAgent.TrainDynamicsEverySteps = 0
-    conf.JointTrainAgent.TrainAgentEverySteps = 0
-    conf.JointTrainAgent.SaveEverySteps = 0
-    conf.JointTrainAgent.UseDemonstration = False
-    
-    conf.Wandb = CN()
-    conf.Wandb.Project = ""
-
-    conf.defrost()
-    conf.merge_from_file(config_path)
-    conf.freeze()
-
-    return conf
-
-def make_logger(logdir: Path, config):
-    logdir.mkdir(parents=True, exist_ok=True)
+def make_logger(logdir: embodied.Path, config):
     loggers = [
         embodied_logger.TerminalOutput(),
         embodied_logger.JSONLOutput(logdir, "metrics.jsonl"),
@@ -96,24 +29,24 @@ def make_logger(logdir: Path, config):
         VideoOutput(logdir, fps=20),
         embodied_logger.WandBOutput(
             wandb_init_kwargs=dict(
-                project=config.Wandb.Project,
+                project=config.wandb.project,
                 group=logdir.parent.name,
                 name=logdir.name,
                 config=dict(config),
                 dir=logdir,
             )
-        ) if config.Wandb.Project else None,
+        ) if config.wandb.project else None,
     ]
     loggers = [x for x in loggers if x is not None]
     return embodied_logger.Logger(embodied.Counter(), loggers)
 
-def build_single_env(env_name, image_size, seed, index=0):
+def build_single_env(env_name, env_kwargs, seed ,index=0):
     env_seed = hash((seed, index)) % (2 ** 32 - 1)
     if env_name.startswith("ALE/"):
         env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
         env = env_wrapper.SeedEnvWrapper(env, seed=env_seed)
-        env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
-        env = gymnasium.wrappers.ResizeObservation(env, shape=image_size)
+        env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=env_kwargs['skip'])
+        env = gymnasium.wrappers.ResizeObservation(env, shape=env_kwargs['size'])
         env = env_wrapper.LifeLossInfo(env)
     else:
         env = gymnasium.make(env_name, render_mode="rgb_array")
@@ -122,12 +55,12 @@ def build_single_env(env_name, image_size, seed, index=0):
     return env
 
 
-def build_vec_env(env_name, image_size, num_envs, seed):
+def build_vec_env(env_name, num_envs, seed, env_kwargs):
     # lambda pitfall refs to: https://python.plainenglish.io/python-pitfalls-with-variable-capture-dcfc113f39b7
-    def lambda_generator(env_name, image_size, i):
-        return lambda: build_single_env(env_name, image_size, seed, i)
+    def lambda_generator(env_name, i):
+        return lambda: build_single_env(env_name, env_kwargs, seed, i)
     env_fns = []
-    env_fns = [lambda_generator(env_name, image_size, i) for i in range(num_envs)]
+    env_fns = [lambda_generator(env_name, i) for i in range(num_envs)]
     vec_env = gymnasium.vector.AsyncVectorEnv(env_fns=env_fns)
     return vec_env
 
@@ -163,15 +96,15 @@ def world_model_imagine_data(replay_buffer: ReplayBuffer,
     return latent, action, None, None, reward_hat, termination_hat
 
 
-def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
+def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
                                   replay_buffer, world_model, agent,
                                   train_dynamics_every_steps, train_agent_every_steps,
                                   batch_size, demonstration_batch_size, batch_length,
                                   imagine_batch_size, imagine_demonstration_batch_size,
                                   imagine_context_length, imagine_batch_length,
-                                  save_every_steps, seed, logger):
+                                  save_every_steps, seed, logger, ckpt_path):
 
-    vec_env = build_vec_env(env_name, image_size, num_envs=num_envs, seed=seed)
+    vec_env = build_vec_env(env_name, num_envs=num_envs, seed=seed, env_kwargs=env_kwargs)
     print("Current env: " + colorama.Fore.YELLOW + f"{env_name}" + colorama.Style.RESET_ALL)
 
     # reset envs and variables
@@ -186,7 +119,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
     epstats = embodied.Agg()
     episodes = defaultdict(embodied.Agg)
     
-    should_log = embodied.when.Every(1000)
+    should_log = embodied.when.Every(log_frequency)
     
 
     for total_steps in tqdm(range(max_steps//num_envs)):
@@ -291,124 +224,132 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
         # save model per episode
         if logger.step % save_every_steps == 0:
             print(colorama.Fore.GREEN + f"Saving model at total steps {logger.step}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), logger.path/f"world_model_{logger.step}.pth")
-            torch.save(agent.state_dict(), logger.path/f"agent_{logger.step}.pth")
+            torch.save(world_model.state_dict(), ckpt_path/f"world_model_{logger.step}.pth")
+            torch.save(agent.state_dict(), ckpt_path/f"agent_{logger.step}.pth")
 
 
 def build_world_model(conf, action_dim):
     return WorldModel(
-        in_channels=conf.Models.WorldModel.InChannels,
+        in_channels=conf.world_model.in_channels,
         action_dim=action_dim,
-        transformer_max_length=conf.Models.WorldModel.TransformerMaxLength,
-        transformer_hidden_dim=conf.Models.WorldModel.TransformerHiddenDim,
-        transformer_num_layers=conf.Models.WorldModel.TransformerNumLayers,
-        transformer_num_heads=conf.Models.WorldModel.TransformerNumHeads,
-        encoder_type=conf.Models.WorldModel.EncoderType,
-        input_dim=conf.Models.WorldModel.InputDim,
-        hidden_dim=conf.Models.WorldModel.HiddenDim
+        transformer_max_length=conf.world_model.transformer_max_length,
+        transformer_hidden_dim=conf.world_model.transformer_hidden_dim,
+        transformer_num_layers=conf.world_model.transformer_num_layers,
+        transformer_num_heads=conf.world_model.transformer_num_heads,
+        transformer_positional_encoding=conf.world_model.transformer_positional_encoding,
+        encoder_type=conf.world_model.encoder_type,
+        input_dim=conf.world_model.input_dim,
+        hidden_dim=conf.world_model.hidden_dim,
     ).cuda()
 
 
 def build_agent(conf, action_dim):
     return agents.ActorCriticAgent(
-        feat_dim=32*32+conf.Models.WorldModel.TransformerHiddenDim,
-        num_layers=conf.Models.Agent.NumLayers,
-        hidden_dim=conf.Models.Agent.HiddenDim,
+        feat_dim=32*32+conf.world_model.transformer_hidden_dim,
+        num_layers=conf.agent.num_layers,
+        hidden_dim=conf.agent.hidden_dim,
         action_dim=action_dim,
-        gamma=conf.Models.Agent.Gamma,
-        lambd=conf.Models.Agent.Lambda,
-        entropy_coef=conf.Models.Agent.EntropyCoef,
+        gamma=conf.agent.gamma,
+        lambd=conf.agent.lambd,
+        entropy_coef=conf.agent.entropy_coef,
     ).cuda()
 
 
-def main():
+def main(argv=None):
     # ignore warnings
     import warnings
     warnings.filterwarnings('ignore')
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    # parse arguments
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_config = os.path.join(script_dir, "storm_config.yaml")
+    # Load configs
+    configs = yaml.safe_load((embodied.Path(__file__).parent / "storm_config.yaml").read())
+    parsed, other = embodied.Flags(configs=["defaults"]).parse_known(argv)
+    config = embodied.Config(configs["defaults"])
+    for name in parsed.configs:
+        config = config.update(configs[name])
+    config = embodied.Flags(config).parse(other)
+    config = config.update(
+        logdir=config.logdir.format(timestamp=embodied.timestamp()),
+    )
+
+    # Create and handle logdir
+    logdir = embodied.Path(config.logdir)
+    logdir.mkdir()
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--env_name", type=str, required=True)
-    parser.add_argument("--trajectory_path", type=str, required=False)
-    parser.add_argument("--logdir", type=str, required=True)
-    parser.add_argument("--config_path", type=str, required=False, default=default_config)
-    args = parser.parse_args()
-    conf = load_config(args.config_path)
-    print(colorama.Fore.RED + str(args) + colorama.Style.RESET_ALL)
+    if (logdir / "config.yaml").exists():
+        config = embodied.Config.load(logdir / "config.yaml")
+        print("Loaded config from", logdir / "config.yaml")
+    else:
+        config.save(logdir / "config.yaml")
+        print("Saved config to", logdir / "config.yaml")
+
 
     # set seed
-    seed_np_torch(seed=args.seed)
-    # tensorboard writer
-    logger = make_logger(logdir=Path(args.logdir), config=conf)
-    # copy config file
-    shutil.copy(args.config_path, f"{args.logdir}/config.yaml")
+    seed_np_torch(seed=config.seed)
+    
+    # Create logger
+    logger = make_logger(logdir=logdir, config=config)
 
-    # distinguish between tasks, other debugging options are removed for simplicity
-    if conf.Task == "JointTrainAgent":
-        # getting action_dim with dummy env
-        dummy_env = build_single_env(args.env_name, conf.BasicSettings.ImageSize, seed=0)
-        action_dim = dummy_env.action_space.n
+    # getting action_dim with dummy env
+    dummy_env = build_single_env(config.env.name, config.image_size, seed=0)
+    action_dim = dummy_env.action_space.n
 
-        # build world model and agent
-        world_model = build_world_model(conf, action_dim)
-        agent = build_agent(conf, action_dim)
-        # print the total number of parameters
-        world_model_params = sum(p.numel() for p in world_model.parameters())
-        agent_params = sum(p.numel() for p in agent.parameters())
-        total_params = world_model_params + agent_params
-        print(f"Total number of world model parameters: {world_model_params}")
-        print(f"Total number of agent parameters: {agent_params}")
-        print(f"Total number of parameters: {total_params}")
+    # build world model and agent
+    world_model = build_world_model(config, action_dim)
+    agent = build_agent(config, action_dim)
+    # print the total number of parameters
+    world_model_params = sum(p.numel() for p in world_model.parameters())
+    agent_params = sum(p.numel() for p in agent.parameters())
+    total_params = world_model_params + agent_params
+    print(f"Total number of world model parameters: {world_model_params}")
+    print(f"Total number of agent parameters: {agent_params}")
+    print(f"Total number of parameters: {total_params}")
 
-        # build replay buffer
-        if conf.Models.WorldModel.EncoderType == "cnn":
-            obs_shape = (conf.BasicSettings.ImageSize, conf.BasicSettings.ImageSize, 3)
-        else:
-            obs_shape = (conf.Models.WorldModel.InputDim,)
-
-        replay_buffer = ReplayBuffer(
-            obs_shape=obs_shape,
-            num_envs=conf.JointTrainAgent.NumEnvs,
-            max_length=conf.JointTrainAgent.BufferMaxLength,
-            warmup_length=conf.JointTrainAgent.BufferWarmUp,
-            store_on_gpu=conf.BasicSettings.ReplayBufferOnGPU
-        )
-
-        # judge whether to load demonstration trajectory
-        if conf.JointTrainAgent.UseDemonstration:
-            print(colorama.Fore.MAGENTA + f"loading demonstration trajectory from {args.trajectory_path}" + colorama.Style.RESET_ALL)
-            replay_buffer.load_trajectory(path=args.trajectory_path)
-
-        # train
-        joint_train_world_model_agent(
-            env_name=args.env_name,
-            num_envs=conf.JointTrainAgent.NumEnvs,
-            max_steps=conf.JointTrainAgent.SampleMaxSteps,
-            image_size=conf.BasicSettings.ImageSize,
-            replay_buffer=replay_buffer,
-            world_model=world_model,
-            agent=agent,
-            train_dynamics_every_steps=conf.JointTrainAgent.TrainDynamicsEverySteps,
-            train_agent_every_steps=conf.JointTrainAgent.TrainAgentEverySteps,
-            batch_size=conf.JointTrainAgent.BatchSize,
-            demonstration_batch_size=conf.JointTrainAgent.DemonstrationBatchSize if conf.JointTrainAgent.UseDemonstration else 0,
-            batch_length=conf.JointTrainAgent.BatchLength,
-            imagine_batch_size=conf.JointTrainAgent.ImagineBatchSize,
-            imagine_demonstration_batch_size=conf.JointTrainAgent.ImagineDemonstrationBatchSize if conf.JointTrainAgent.UseDemonstration else 0,
-            imagine_context_length=conf.JointTrainAgent.ImagineContextLength,
-            imagine_batch_length=conf.JointTrainAgent.ImagineBatchLength,
-            save_every_steps=conf.JointTrainAgent.SaveEverySteps,
-            seed=args.seed,
-            logger=logger
-        )
+    # build replay buffer
+    if config.world_model.encoder_type == "cnn":
+        obs_shape = (config.image_size, config.image_size, 3)
     else:
-        raise NotImplementedError(f"Task {conf.Task} not implemented")
+        obs_shape = (config.world_model.input_dim,)
+
+    replay_buffer = ReplayBuffer(
+        obs_shape=obs_shape,
+        num_envs=config.train.num_envs,
+        max_length=config.train.buffer_max_length,
+        warmup_length=config.train.buffer_warm_up,
+        store_on_gpu=config.replay_buffer_on_gpu
+    )
+    if config.train.demonstration_path:
+        print(colorama.Fore.MAGENTA + f"loading demonstration trajectory from {config.train.demonstration_path}" + colorama.Style.RESET_ALL)
+        replay_buffer.load_trajectory(path=config.train.demonstration_path)
+
+    # Create checkpoint directory
+    ckpt_path = logdir
+    
+    env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs)
+    # train
+    train_world_model_agent(
+        env_name=config.env.name,
+        env_kwargs=env_kwargs,
+        num_envs=config.train.num_envs,
+        max_steps=config.train.sample_max_steps,
+        replay_buffer=replay_buffer,
+        world_model=world_model,
+        agent=agent,
+        train_dynamics_every_steps=config.train.train_dynamics_every_steps,
+        train_agent_every_steps=config.train.train_agent_every_steps,
+        batch_size=config.train.batch_size,
+        demonstration_batch_size=config.train.demonstration_batch_size if config.train.demonstration_path else 0,
+        batch_length=config.train.batch_length,
+        imagine_batch_size=config.train.imagine_batch_size,
+        imagine_demonstration_batch_size=config.train.imagine_demonstration_batch_size if config.train.demonstration_path else 0,
+        imagine_context_length=config.train.imagine_context_length,
+        imagine_batch_length=config.train.imagine_batch_length,
+        save_every_steps=config.train.save_every_steps,
+        seed=config.seed,
+        logger=logger,
+        ckpt_path=ckpt_path
+    )
 
 if __name__ == "__main__":
     main()

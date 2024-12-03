@@ -256,6 +256,7 @@ class WorldModel(nn.Module):
     def __init__(self, in_channels, action_dim,
                  transformer_max_length, transformer_hidden_dim, 
                  transformer_num_layers, transformer_num_heads,
+                 transformer_positional_encoding="learnt",
                  encoder_type="cnn",  # Add encoder_type parameter
                  input_dim=None,      # Add input_dim for MLP case
                  hidden_dim=None):    # Add hidden_dim for MLP case
@@ -309,6 +310,7 @@ class WorldModel(nn.Module):
             num_layers=transformer_num_layers,
             num_heads=transformer_num_heads,
             max_length=transformer_max_length,
+            positional_encoding=transformer_positional_encoding,
             dropout=0.1
         )
         

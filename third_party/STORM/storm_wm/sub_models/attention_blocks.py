@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
-
+import math
 
 def get_subsequent_mask(seq):
     ''' For masking out the subsequent info. '''
@@ -148,25 +148,43 @@ class PositionalEncoding1D(nn.Module):
     def __init__(
         self,
         max_length: int,
-        embed_dim: int
+        embed_dim: int,
+        positional_encoding: str = "learnt" # "sinusoidal" or "learnt"
     ):
         super().__init__()
         self.max_length = max_length
         self.embed_dim = embed_dim
+        self.positional_encoding = positional_encoding
 
-        self.pos_emb = nn.Embedding(self.max_length, embed_dim)
+        assert self.positional_encoding in ["learnt", "sinusoidal"]
+        if self.positional_encoding == "learnt":
+            self.pos_emb = nn.Embedding(self.max_length, embed_dim)
+        else:
+            # Create sinusoidal position embedding
+            position = torch.arange(max_length).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, embed_dim, 2) * (-math.log(10000.0) / embed_dim))
+            pe = torch.zeros(max_length, embed_dim)
+            pe[:, 0::2] = torch.sin(position * div_term)
+            pe[:, 1::2] = torch.cos(position * div_term)
+            self.register_buffer('pe', pe)
 
     def forward(self, feat):
-        pos_emb = self.pos_emb(torch.arange(self.max_length, device=feat.device))
-        pos_emb = repeat(pos_emb, "L D -> B L D", B=feat.shape[0])
+        if self.positional_encoding == "learnt":
+            pos_emb = self.pos_emb(torch.arange(self.max_length, device=feat.device))
+            pos_emb = repeat(pos_emb, "L D -> B L D", B=feat.shape[0])
+        else:
+            pos_emb = repeat(self.pe, "L D -> B L D", B=feat.shape[0])
 
         feat = feat + pos_emb[:, :feat.shape[1], :]
         return feat
 
     def forward_with_position(self, feat, position):
         assert feat.shape[1] == 1
-        pos_emb = self.pos_emb(torch.arange(self.max_length, device=feat.device))
-        pos_emb = repeat(pos_emb, "L D -> B L D", B=feat.shape[0])
+        if self.positional_encoding == "learnt":
+            pos_emb = self.pos_emb(torch.arange(self.max_length, device=feat.device))
+            pos_emb = repeat(pos_emb, "L D -> B L D", B=feat.shape[0])
+        else:
+            pos_emb = repeat(self.pe, "L D -> B L D", B=feat.shape[0])
 
         feat = feat + pos_emb[:, position:position+1, :]
         return feat

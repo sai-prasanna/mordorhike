@@ -1,44 +1,58 @@
-Task: "JointTrainAgent"
+defaults:
+  # Basic Settings
+  seed: 0
+  image_size: 64
+  replay_buffer_on_gpu: true
+  logdir: logs/storm/{timestamp}
 
-BasicSettings:
-  Seed: 0
-  ImageSize: 64
-  ReplayBufferOnGPU: True
+  # Environment Settings
+  env:
+    name: "mordor-hike-medium-v0"
+    kwargs: ""
 
-JointTrainAgent:
-  SampleMaxSteps: 500000
-  BufferMaxLength: 500000
-  BufferWarmUp: 1024
-  NumEnvs: 1
-  BatchSize: 16
-  DemonstrationBatchSize: 4
-  BatchLength: 64
-  ImagineBatchSize: 1024
-  ImagineDemonstrationBatchSize: 256
-  ImagineContextLength: 8
-  ImagineBatchLength: 16
-  TrainDynamicsEverySteps: 1
-  TrainAgentEverySteps: 1
-  UseDemonstration: False
-  SaveEverySteps: 5000
+  # World Model Settings
+  world_model:
+    in_channels: 3
+    transformer_max_length: 256
+    transformer_hidden_dim: 256
+    transformer_num_layers: 2
+    transformer_num_heads: 8
+    transformer_positional_encoding: "learnt"
+    encoder_type: "mlp"
+    input_dim: 1
+    hidden_dim: 256
 
-Models:
-  WorldModel:
-    InChannels: 3
-    TransformerMaxLength: 256
-    TransformerHiddenDim: 256
-    TransformerNumLayers: 2
-    TransformerNumHeads: 8
-    EncoderType: "mlp"
-    InputDim: 1
-    HiddenDim: 256
+  # Agent Settings
+  agent:
+    num_layers: 2
+    hidden_dim: 256
+    gamma: 0.99
+    lambd: 0.95
+    entropy_coef: 3.0e-4
 
-  Agent:
-    NumLayers: 2
-    HiddenDim: 256
-    Gamma: 0.99
-    Lambda: 0.95
-    EntropyCoef: 3E-4
+  train:
+    sample_max_steps: 500000
+    buffer_max_length: 500000
+    buffer_warm_up: 1024
+    num_envs: 1
+    batch_size: 16
+    demonstration_batch_size: 4
+    batch_length: 64
+    imagine_batch_size: 1024
+    imagine_demonstration_batch_size: 256
+    imagine_context_length: 8
+    imagine_batch_length: 16
+    train_dynamics_every_steps: 1
+    train_agent_every_steps: 1
+    save_every_steps: 5000
+    demonstration_path: ""
 
-Wandb:
-  Project: ""
+  # Wandb Settings
+  wandb:
+    project: "powm"
+
+size4m:
+  world_model:
+    transformer_hidden_dim: 256
+  agent:
+    hidden_dim: 256

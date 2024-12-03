@@ -8,7 +8,7 @@ from .attention_blocks import PositionalEncoding1D, AttentionBlock, AttentionBlo
 
 
 class StochasticTransformer(nn.Module):
-    def __init__(self, stoch_dim, action_dim, feat_dim, num_layers, num_heads, max_length, dropout):
+    def __init__(self, stoch_dim, action_dim, feat_dim, num_layers, num_heads, max_length, dropout, positional_encoding):
         super().__init__()
         self.action_dim = action_dim
 
@@ -20,7 +20,7 @@ class StochasticTransformer(nn.Module):
             nn.Linear(feat_dim, feat_dim, bias=False),
             nn.LayerNorm(feat_dim)
         )
-        self.position_encoding = PositionalEncoding1D(max_length=max_length, embed_dim=feat_dim)
+        self.position_encoding = PositionalEncoding1D(max_length=max_length, embed_dim=feat_dim, positional_encoding=positional_encoding)
         self.layer_stack = nn.ModuleList([
             AttentionBlock(feat_dim=feat_dim, hidden_dim=feat_dim*2, num_heads=num_heads, dropout=dropout) for _ in range(num_layers)
         ])
@@ -42,8 +42,9 @@ class StochasticTransformer(nn.Module):
 
 
 class StochasticTransformerKVCache(nn.Module):
-    def __init__(self, stoch_dim, action_dim, feat_dim, num_layers, num_heads, max_length, dropout):
+    def __init__(self, stoch_dim, action_dim, feat_dim, num_layers, num_heads, max_length, positional_encoding, dropout):
         super().__init__()
+        assert positional_encoding in ["sine", "learnt"]
         self.action_dim = action_dim
         self.feat_dim = feat_dim
 
@@ -55,7 +56,7 @@ class StochasticTransformerKVCache(nn.Module):
             nn.Linear(feat_dim, feat_dim, bias=False),
             nn.LayerNorm(feat_dim)
         )
-        self.position_encoding = PositionalEncoding1D(max_length=max_length, embed_dim=feat_dim)
+        self.position_encoding = PositionalEncoding1D(max_length=max_length, embed_dim=feat_dim, positional_encoding=positional_encoding)
         self.layer_stack = nn.ModuleList([
             AttentionBlockKVCache(feat_dim=feat_dim, hidden_dim=feat_dim*2, num_heads=num_heads, dropout=dropout) for _ in range(num_layers)
         ])
