@@ -17,7 +17,7 @@ defaults:
     transformer_hidden_dim: 256
     transformer_num_layers: 2
     transformer_num_heads: 8
-    transformer_positional_encoding: "learnt"
+    transformer_positional_encoding: "sinusoidal"
     encoder_type: "mlp"
     input_dim: 1
     hidden_dim: 256
@@ -31,8 +31,8 @@ defaults:
     entropy_coef: 3.0e-4
 
   train:
-    sample_max_steps: 500000
-    buffer_max_length: 500000
+    sample_max_steps: 5e5
+    buffer_max_length: 5e5
     buffer_warm_up: 1024
     num_envs: 1
     batch_size: 16
@@ -44,8 +44,8 @@ defaults:
     imagine_batch_length: 16
     train_dynamics_every_steps: 1
     train_agent_every_steps: 1
-    save_every: 50000
-    log_every: 5000
+    save_every: 5e4
+    log_every: 1e4
     demonstration_path: ""
 
   # Wandb Settings

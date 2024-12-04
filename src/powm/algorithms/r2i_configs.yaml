@@ -37,7 +37,7 @@ defaults:
     log_units: seconds # seconds/steps
     log_every: 300
     save_every: 900
-    save_each_ckpt: False
+    save_each_ckpt: True
     eval_every: 1e6
     eval_initial: True
     eval_eps: 1
@@ -294,7 +294,7 @@ mordorhike:
   run:
     script: train
     steps: 5e5
-    save_every: 1e5
+    save_every: 5e4
     log_every: 1e4
     eval_every: 1e5
     log_units: steps

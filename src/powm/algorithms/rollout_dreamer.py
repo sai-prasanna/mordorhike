@@ -39,13 +39,14 @@ def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episode
         # Collect episode data
         # Assume we are encoding and decoding same observation spaces
         # which is standard for dreamerv3 or any sequential VAEs
-        for k in tran.keys():
-            if re.match(config.dec.spaces, k):
-                current_episode[f"observations_{k}"].append(tran[k])
+        matching_keys = [k for k in tran.keys() if re.match(config.dec.spaces, k)]
+        for k in matching_keys:
+            key = "obs" if len(matching_keys) == 1 else f"obs_{k}"
+            current_episode[key].append(tran[k])
         for k in driver.act_space.keys():
             current_episode[k].append(tran[k])
-        current_episode["rewards"].append(tran["reward"])
-        current_episode["states"].append(info["state"])
+        current_episode["reward"].append(tran["reward"])
+        current_episode["state"].append(info["state"])
         
         # Store raw deter and stoch temporarily
         current_episode["_deter"].append(tran["deter"])
@@ -76,6 +77,14 @@ def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episode
                 episode_latents,
                 episode_actions
             )
+            num_keys = len(predictions)
+            for k, v in predictions.items():
+                key = "obs_hat" if num_keys == 1 else f"obs_hat_{k}"
+                # Remove batch as it's 1
+                v = v[0] # Timestep * n_steps * particles * pred_dim
+                # swap particles and n_steps
+                v = v.swapaxes(1, 2) # Timestep * particles * n_steps * pred_dim
+                current_episode[key] = v
 
             # Create one-hot latents for storage
             deter = np.array(current_episode['_deter'])
@@ -91,7 +100,6 @@ def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episode
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
                 'latents': latents,
-                **predictions
             })
             current_episode.clear()
 
@@ -167,4 +175,4 @@ def main(argv=None):
 # Example usage
 if __name__ == "__main__":
     # main()
-    main(["--logdir", "experiments/test_nopp"])
+    main()

@@ -26,13 +26,16 @@ def collect_rollouts(logger, agent, config, env, num_episodes):
         current_episode = worker_episodes[worker]
         # Collect episode data
         # Assume we are encoding and decoding same observation spaces
-        for k in tran.keys():
-            if re.match(config.decoder.mlp_keys, k) or re.match(config.decoder.cnn_keys, k):
-                current_episode[f"observations_{k}"].append(tran[k])
+        
+        matching_keys = [k for k in tran.keys() 
+                         if re.match(config.decoder.mlp_keys, k) or re.match(config.decoder.cnn_keys, k)]
+        for k in matching_keys:
+            key = "obs" if len(matching_keys) == 1 else f"obs_{k}"
+            current_episode[key].append(tran[k])
         for k in env.act_space.keys():
             current_episode[k].append(tran[k])
-        current_episode["rewards"].append(tran["reward"])
-        current_episode["states"].append(info["state"])
+        current_episode["reward"].append(tran["reward"])
+        current_episode["state"].append(info["state"])
         
         #Store raw deter and stoch temporarily
         latent_keys = ["deter", "stoch", "hidden", "logit"]
@@ -42,13 +45,13 @@ def collect_rollouts(logger, agent, config, env, num_episodes):
         
         if tran["is_last"]:
             # Calculate episode statistics
-            score = sum(current_episode["rewards"])
-            length = len(current_episode["rewards"])
+            score = sum(current_episode["reward"])
+            length = len(current_episode["reward"])
             scores.append(score)
             lengths.append(length)
             
             # Calculate discounted return
-            rewards = np.array(current_episode["rewards"])
+            rewards = np.array(current_episode["reward"])
             discount_factor = 1 - 1 / config.horizon
             discounts = discount_factor ** np.arange(len(rewards))
             discounted_return = np.sum(rewards * discounts)
@@ -66,7 +69,10 @@ def collect_rollouts(logger, agent, config, env, num_episodes):
                 episode_latents,
                 episode_actions
             )
-            
+            num_keys = len(predictions)
+            for k, v in predictions.items():
+                key = f"pred_{k}" if num_keys == 1 else f"pred_{k}"
+                current_episode[key].append(v)
             # Create one-hot latents for storage
             deter = np.array(current_episode['deter'])
             stoch = np.array(current_episode['stoch'])
@@ -83,7 +89,6 @@ def collect_rollouts(logger, agent, config, env, num_episodes):
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
                 'latents': latents,
-                **predictions
             })
             current_episode.clear()
 
@@ -155,4 +160,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main(["--logdir", "experiments/test_r2i_1"])
+    main()
