@@ -17,7 +17,7 @@ defaults:
     transformer_hidden_dim: 256
     transformer_num_layers: 2
     transformer_num_heads: 8
-    transformer_positional_encoding: "sinusoidal"
+    transformer_positional_encoding: "sine"
     encoder_type: "mlp"
     input_dim: 1
     hidden_dim: 256

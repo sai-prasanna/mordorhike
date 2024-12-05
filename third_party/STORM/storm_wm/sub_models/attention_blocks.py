@@ -149,14 +149,14 @@ class PositionalEncoding1D(nn.Module):
         self,
         max_length: int,
         embed_dim: int,
-        positional_encoding: str = "learnt" # "sinusoidal" or "learnt"
+        positional_encoding: str = "learnt" # "sine" or "learnt"
     ):
         super().__init__()
         self.max_length = max_length
         self.embed_dim = embed_dim
         self.positional_encoding = positional_encoding
 
-        assert self.positional_encoding in ["learnt", "sinusoidal"]
+        assert self.positional_encoding in ["learnt", "sine"]
         if self.positional_encoding == "learnt":
             self.pos_emb = nn.Embedding(self.max_length, embed_dim)
         else:

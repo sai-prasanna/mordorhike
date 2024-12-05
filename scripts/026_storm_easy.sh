@@ -16,7 +16,6 @@ echo "Started at $(date)";
 
 
 start=`date +%s`
-export OMP_NUM_THREADS=1
 seeds=(42 1337 13)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
