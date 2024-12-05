@@ -44,7 +44,7 @@ def build_single_env(env_name, env_kwargs, seed ,index=0):
     env_seed = hash((seed, index)) % (2 ** 32 - 1)
     if env_name.startswith("ALE/"):
         env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
-        env = env_wrapper.SeedEnvWrapper(env, seed=env_seed)
+        env.reset(seed=env_seed)
         env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=env_kwargs['skip'])
         env = gymnasium.wrappers.ResizeObservation(env, shape=env_kwargs['size'])
         env = env_wrapper.LifeLossInfo(env)
