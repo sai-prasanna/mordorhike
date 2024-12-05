@@ -110,7 +110,7 @@ class MordorHike(gym.Env):
         self.map_upper_bound = np.full(self.dimensions, 1.0)
         self.fixed_start_pos = np.full(self.dimensions, -0.8)
         self.uniform_start_lower_bound = np.array([-1.0, -1.0])
-        self.uniform_start_upper_bound = np.array([1.0, 0.0])
+        self.uniform_start_upper_bound = np.array([0.0, 0.0])
         self.goal_position = np.full(self.dimensions, 0.8)
         self.mvn_1 = mvn(mean=[0.0, 0.0], cov=[[0.005, 0.0], [0.0, 1.0]])
         self.mvn_2 = mvn(mean=[0.0, -0.8], cov=[[1.0, 0.0], [0.0, 0.01]])
@@ -263,7 +263,9 @@ class MordorHike(gym.Env):
         reward = 0 if terminated else self._altitude(self.state[:2].reshape(1, -1))[0]
 
         truncated = self.step_count >= self.horizon
-        info = {}
+        info = {
+            "state": self.state.copy()
+        }
         if self.estimate_belief:
             self._update_belief(action, observation)
             info["belief"] = self._get_belief()
@@ -284,7 +286,9 @@ class MordorHike(gym.Env):
         if self.render_mode == "human":
             self.render()
 
-        info = {}
+        info = {
+            "state": self.state.copy()
+        }
         if self.estimate_belief:
             self._init_belief()
             self._update_belief(None, observation)
@@ -359,21 +363,46 @@ class MordorHike(gym.Env):
 
         # Draw particles
         if self.estimate_belief:
+            # Create density map for particle positions
+            density_map = np.zeros(img.shape[:2], dtype=np.float32)
             for particle in self.particles:
                 pos = tuple(map(int, self._world_to_pixel(particle[:2])))
-                cv2.circle(img, pos, int(2), (0, 165, 255), 1)
-                direction = (
-                    int(4 * scale_factor * np.cos(particle[2])),
-                    int(-4 * scale_factor * np.sin(particle[2])),
-                )
-                cv2.line(
-                    img,
-                    pos,
-                    (pos[0] + direction[0], pos[1] + direction[1]),
-                    (0, 165, 255),
-                    1,
-                )
-
+                if 0 <= pos[0] < img.shape[1] and 0 <= pos[1] < img.shape[0]:
+                    density_map[pos[1], pos[0]] += 1
+            
+            # Normalize density map
+            density_map = density_map / np.max(density_map)
+            
+            # Draw particles with colors based on angle difference
+            for particle in self.particles:
+                pos = tuple(map(int, self._world_to_pixel(particle[:2])))
+                if 0 <= pos[0] < img.shape[1] and 0 <= pos[1] < img.shape[0]:
+                    # Calculate angle difference with true state
+                    angle_diff = abs((particle[2] - self.state[2] + np.pi) % (2*np.pi) - np.pi)
+                    angle_match = angle_diff < np.pi/6  # Within 30 degrees
+                    
+                    # Set alpha based on local density
+                    alpha = min(1.0, density_map[pos[1], pos[0]] * 0.8 + 0.2)
+                    
+                    # Draw circle and direction with different colors based on angle match
+                    color = (0, 255, 0) if angle_match else (0, 165, 255)  # Green if angle matches, orange if not
+                    overlay = img.copy()
+                    cv2.circle(overlay, pos, int(2), color, 1)
+                    
+                    direction = (
+                        int(4 * scale_factor * np.cos(particle[2])),
+                        int(-4 * scale_factor * np.sin(particle[2])),
+                    )
+                    cv2.line(
+                        overlay,
+                        pos,
+                        (pos[0] + direction[0], pos[1] + direction[1]),
+                        color,
+                        1,
+                    )
+                    
+                    # Apply alpha blending
+                    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
         # Draw actual position and direction
         pos = tuple(map(int, self._world_to_pixel(self.state[:2])))
         cv2.circle(img, pos, int(5 * scale_factor), (0, 0, 255), -1)
@@ -550,72 +579,72 @@ def main():
     env = MordorHike.hard(
         render_mode="human", lateral_action="strafe", estimate_belief=True
     )
-
     obs, _ = env.reset(seed=2)
-    print(f"Initial observation: {obs}")
 
     cum_rew = 0.0
-    done = False
+    
+    while True:
+        done = False
+        obs, _ = env.reset()
+        while not done:
+            start_time = time.time()
+            env.render()
+            end_time = time.time()
+            print(f"Time taken render: {end_time - start_time}")
+            key = cv2.waitKey(0) & 0xFF
 
-    while not done:
-        start_time = time.time()
-        env.render()
-        end_time = time.time()
-        print(f"Time taken render: {end_time - start_time}")
-        key = cv2.waitKey(0) & 0xFF
+            if key == ord("q"):
+                break
+            elif key == ord("w"):
+                action = 0  # Move forward
+            elif key == ord("s"):
+                action = 1  # Move backward
+            elif key == ord("a"):
+                action = 2  # Turn left
+            elif key == ord("d"):
+                action = 3  # Turn right
+            elif key == ord("c"):
+                action = env.cem_plan(
+                    env.state,
+                    n_iterations=5,
+                    n_samples=1000,
+                    n_elite=100,
+                    horizon=50,
+                    discount=0.99,
+                    update_smooth_factor=0.1,
+                )
+            elif key == ord("e"):
+                sampled_particle = random.choice(env.particles)
+                env.particles = np.tile(sampled_particle, (env.num_particles, 1))
+                print(sampled_particle, env.particles.shape)
+                action = env.cem_plan(
+                    sampled_particle,
+                    n_iterations=5,
+                    n_samples=1000,
+                    n_elite=100,
+                    horizon=50,
+                    discount=0.99,
+                    update_smooth_factor=0.1,
+                )
+            elif key == ord("r"):
+                action = env.reinforce_plan(
+                    env.state,
+                    n_iterations=1000,
+                    horizon=50,
+                    learning_rate=0.01,
+                    discount=0.99,
+                    batch_size=32,
+                )
+            else:
+                continue
+            start_time = time.time()
+            obs, rew, terminated, truncated, _ = env.step(action)
+            end_time = time.time()
+            print(f"Time taken: {end_time - start_time}")
+            done = terminated or truncated
+            print(f"Action: {action}, Observation: {obs}, Reward: {rew}, Done: {done}")
 
-        if key == ord("q"):
-            break
-        elif key == ord("w"):
-            action = 0  # Move forward
-        elif key == ord("s"):
-            action = 1  # Move backward
-        elif key == ord("a"):
-            action = 2  # Turn left
-        elif key == ord("d"):
-            action = 3  # Turn right
-        elif key == ord("c"):
-            action = env.cem_plan(
-                env.state,
-                n_iterations=5,
-                n_samples=1000,
-                n_elite=100,
-                horizon=50,
-                discount=0.99,
-                update_smooth_factor=0.1,
-            )
-        elif key == ord("e"):
-            sampled_particle = random.choice(env.particles)
-            env.particles = np.tile(sampled_particle, (env.num_particles, 1))
-            print(sampled_particle, env.particles.shape)
-            action = env.cem_plan(
-                sampled_particle,
-                n_iterations=5,
-                n_samples=1000,
-                n_elite=100,
-                horizon=50,
-                discount=0.99,
-                update_smooth_factor=0.1,
-            )
-        elif key == ord("r"):
-            action = env.reinforce_plan(
-                env.state,
-                n_iterations=1000,
-                horizon=50,
-                learning_rate=0.01,
-                discount=0.99,
-                batch_size=32,
-            )
-        else:
-            continue
-        start_time = time.time()
-        obs, rew, terminated, truncated, _ = env.step(action)
-        end_time = time.time()
-        print(f"Time taken: {end_time - start_time}")
-        done = terminated or truncated
-        print(f"Action: {action}, Observation: {obs}, Reward: {rew}, Done: {done}")
-
-        cum_rew += rew
+            cum_rew += rew
 
     print(f"Total reward: {cum_rew}")
     env.close()
