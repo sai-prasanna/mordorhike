@@ -24,10 +24,11 @@ storm-wm = { path = "third_party/STORM", editable = true }
 
 [project.scripts]
 train-dreamer = "powm.algorithms.train_dreamer:main"
-eval-dreamer = "powm.algorithms.eval_dreamer:main"
+rollout-dreamer = "powm.algorithms.rollout_dreamer:main"
 train-r2i = "powm.algorithms.train_r2i:main"
+rollout-r2i = "powm.algorithms.rollout_r2i:main"
 train-storm = "powm.algorithms.train_storm:main"
-
+rollout-storm = "powm.algorithms.rollout_storm:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
