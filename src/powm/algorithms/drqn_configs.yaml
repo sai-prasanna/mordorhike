@@ -1,0 +1,42 @@
+defaults:
+  # Logging and checkpoint configurations
+  logdir: logs/drqn/{timestamp}
+  
+  train:
+    steps: 500000  # Total number of training steps
+    log_every: 10000  # Log metrics every N steps
+    learning_rate: 3e-4 # Learning rate for Adam optimizer
+    batch_size: 32        # Batch size for training
+    buffer_capacity: 1000 # Maximum number of trajectories in replay buffer
+    train_every: 50       # Train after every N environment steps
+    target_period: 500 # Update target every N steps
+    num_gradient_steps: 10 # Number of gradient steps per training update
+    save_every: 100000   # Save checkpoint every N steps
+    epsilon: 0.1         # Exploration rate
+    gamma: 0.99          # Discount factor
+    
+
+  # Environment configurations
+  env:
+    name: "mordor-hike-easy-v0"
+    kwargs: ""
+  
+  # DRQN specific configurations
+  drqn:
+    hidden_size: 256      # Size of GRU hidden layer
+    num_layers: 1         # Number of GRU layers
+  
+  # Random seed for reproducibility
+  seed: 42
+  
+  # Weights & Biases logging configuration
+  wandb:
+    project: ""  # Set project name to enable W&B logging
+
+debug:
+  # Minimal configuration for debugging
+  run:
+    steps: 10000
+    log_every: 100
+  wandb:
+    project: ""
