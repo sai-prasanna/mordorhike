@@ -60,7 +60,10 @@ def collect_rollouts(logger, agent, world_model, config, num_episodes):
             current_episode["action"].append(action)
             current_episode["reward"].append(reward)
             if current_latent is not None:
-                current_episode["latents"].append(current_latent.cpu().numpy())
+                current_episode["latent"].append(current_latent.cpu().numpy())
+            else:
+                wm_dim = config.world_model.transformer_hidden_dim + 32*32
+                current_episode["latent"].append(np.zeros((1, 1, wm_dim)))
             
             if done:
                 rewards = np.array(current_episode["reward"])
@@ -101,7 +104,7 @@ def collect_rollouts(logger, agent, world_model, config, num_episodes):
                     )
                     
                     # Store KV cache reference
-                    kv_cache_list = world_model.storm_transformer.kv_cache_list
+                    kv_cache_list = world_model.storm_transformer.kv_cache_list.copy()
                     
                     # Imagine next IMAGINE_STEPS
                     imagined_obs = []

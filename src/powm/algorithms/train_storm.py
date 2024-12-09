@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 import colorama
 from dreamerv3.embodied.core import logger as embodied_logger
-from .train_dreamer import VideoOutput
+from powm.algorithms.train_dreamer import VideoOutput
 from dreamerv3 import embodied
 import ruamel.yaml as yaml
 
@@ -119,6 +119,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
     episodes = defaultdict(embodied.Agg)
     
     should_log = embodied.when.Every(log_every)
+    should_save = embodied.when.Every(save_every)
     
 
     for total_steps in tqdm(range(max_steps//num_envs)):
@@ -221,7 +222,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
         # <<< train agent part
 
         # save model per episode
-        if logger.step % save_every == 0:
+        if should_save(logger.step):
             print(colorama.Fore.GREEN + f"Saving model at total steps {logger.step}" + colorama.Style.RESET_ALL)
             torch.save(world_model.state_dict(), ckpt_path/f"world_model_{logger.step}.pth")
             torch.save(agent.state_dict(), ckpt_path/f"agent_{logger.step}.pth")
