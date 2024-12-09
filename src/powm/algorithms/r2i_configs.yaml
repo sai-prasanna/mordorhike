@@ -277,6 +277,24 @@ xlarge:
   .*\.mlp_layers: 5
   .*\.layers: 5
 
+r2i_popgym:
+  envs.amount: 8
+  run:
+    train_ratio: 64
+  rssm.deter: 1024
+  encoder.mlp_layers: 1
+  decoder.mlp_layers: 1
+  encoder.mlp_units: 512
+  decoder.mlp_units: 512
+  actor.inputs: [stoch, hidden]
+  critic.inputs: [stoch, hidden]
+  ssm.n_layers: 3
+  rssm.units: 1024
+  .*\.cnn_depth: 32
+  .*\.layers: 2
+  .*\.units: 512
+
+
 r2i_large:
   # copied from memory maze
   rssm.deter: 2048
@@ -290,7 +308,7 @@ r2i_large:
 
 mordorhike:
   task: gymnasium_mordor-hike-medium-v0
-  envs.amount: 16
+  envs.amount: 8
   run:
     script: train
     steps: 5e5

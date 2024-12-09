@@ -47,6 +47,7 @@ def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episode
             current_episode[k].append(tran[k])
         current_episode["reward"].append(tran["reward"])
         current_episode["state"].append(info["state"])
+        current_episode["belief"].append(info["belief"])
         
         # Store raw deter and stoch temporarily
         current_episode["_deter"].append(tran["deter"])

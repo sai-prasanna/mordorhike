@@ -8,7 +8,7 @@ defaults:
   # Environment Settings
   env:
     name: "mordor-hike-medium-v0"
-    kwargs: ""
+    kwargs: "{}"
 
   # World Model Settings
   world_model:

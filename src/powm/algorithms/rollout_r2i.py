@@ -36,6 +36,7 @@ def collect_rollouts(logger, agent, config, env, num_episodes):
             current_episode[k].append(tran[k])
         current_episode["reward"].append(tran["reward"])
         current_episode["state"].append(info["state"])
+        current_episode["belief"].append(info["belief"])
         
         #Store raw deter and stoch temporarily
         latent_keys = ["deter", "stoch", "hidden", "logit"]
@@ -127,7 +128,7 @@ def main(argv=None):
     np.random.seed(config.seed)
 
     # Create environment and agent
-    env = make_envs(config)
+    env = make_envs(config, estimate_belief=True)
     step = embodied.Counter()
     agent = recall2imagine.Agent(env.obs_space, env.act_space, step, config)
     logger = make_logger(logdir, step, config, metric_dir=parsed.metric_dir)
@@ -150,13 +151,13 @@ def main(argv=None):
         
         # Save episode data
         ckpt_number = int(step)
+         # Save episode data
         np.savez(
             f"{parsed.logdir}/episodes_{ckpt_number}.npz",
-            episodes=episodes,
+            episodes=episodes
         )
 
     logger.close()
-    env.close()
 
 
 if __name__ == "__main__":

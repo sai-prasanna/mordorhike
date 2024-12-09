@@ -49,7 +49,7 @@ def build_single_env(env_name, env_kwargs, seed ,index=0):
         env = gymnasium.wrappers.ResizeObservation(env, shape=env_kwargs['size'])
         env = env_wrapper.LifeLossInfo(env)
     else:
-        env = gymnasium.make(env_name, render_mode="rgb_array")
+        env = gymnasium.make(env_name, render_mode="rgb_array", **env_kwargs)
         env.reset(seed=env_seed)
         env = gymnasium.wrappers.TransformObservation(env, lambda obs: obs['vector'], observation_space=env.observation_space.spaces['vector'])
     return env

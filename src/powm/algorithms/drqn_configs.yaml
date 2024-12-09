@@ -1,25 +1,26 @@
 defaults:
   # Logging and checkpoint configurations
   logdir: logs/drqn/{timestamp}
-  
+  device: cuda
+
   train:
     steps: 500000  # Total number of training steps
     log_every: 10000  # Log metrics every N steps
     learning_rate: 3e-4 # Learning rate for Adam optimizer
     batch_size: 32        # Batch size for training
-    buffer_capacity: 1000 # Maximum number of trajectories in replay buffer
+    buffer_capacity: 500000 # Maximum number of trajectories in replay buffer
     train_every: 50       # Train after every N environment steps
     target_period: 500 # Update target every N steps
     num_gradient_steps: 10 # Number of gradient steps per training update
     save_every: 100000   # Save checkpoint every N steps
     epsilon: 0.1         # Exploration rate
     gamma: 0.99          # Discount factor
-    
+    num_envs: 1
 
   # Environment configurations
   env:
     name: "mordor-hike-easy-v0"
-    kwargs: ""
+    kwargs: "{}"
   
   # DRQN specific configurations
   drqn:

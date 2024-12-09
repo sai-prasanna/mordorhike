@@ -17,7 +17,8 @@ def collect_rollouts(logger, agent, world_model, config, num_episodes):
     returns = []
     
     # Create vectorized environment
-    env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs)
+    env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
+    env_kwargs["estimate_belief"] = True
     vec_env = build_vec_env(config.env.name, 1, config.seed, env_kwargs)
     
     current_obs, info = vec_env.reset()
@@ -52,7 +53,7 @@ def collect_rollouts(logger, agent, world_model, config, num_episodes):
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B D -> B 1 D"))
             context_action.append(action)
             current_episode["state"].append(info["state"])
-            
+            current_episode["belief"].append(info["belief"])
             obs, reward, terminated, truncated, info = vec_env.step(action)
             done = terminated or truncated
             
@@ -129,8 +130,12 @@ def collect_rollouts(logger, agent, world_model, config, num_episodes):
                 current_episode["obs"] = np.array(current_episode["obs"])[:, 0]
                 current_episode["action"] = np.array(current_episode["action"])[:, 0]
                 current_episode["reward"] = np.array(current_episode["reward"])[:, 0]
-                current_episode["latents"] = np.array(current_episode["latents"])[:, 0]
+                # timesteps x particles x latent_dim (some latents don't have particles like STORM)
+                current_episode["latent"] = np.array(current_episode["latent"])[:, 0]
+                # timesteps x particles x belief_dim
+                current_episode["belief"] = np.array(current_episode["belief"])[:, 0]
                 # remove batch dim, add particle dim as it is just 1 for STORM
+                # Timesteps x particles x future_prediction_timesteps x obs_dim
                 current_episode["obs_hat"] = np.array(imagined_trajectories)[0][:, np.newaxis, ...]
                 current_episode["state"] = np.array(current_episode["state"])[:, 0]
                 episodes_data.append(dict(current_episode))
@@ -168,7 +173,8 @@ def main(argv=None):
     
     # Set seeds
     seed_np_torch(seed=config.seed)
-    env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs)
+    env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
+    env_kwargs["estimate_belief"] = True
     dummy_env = build_single_env(config.env.name, env_kwargs, config.seed, 0)
     action_dim = dummy_env.action_space.n
     dummy_env.close()
