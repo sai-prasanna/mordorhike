@@ -562,62 +562,6 @@ class Agent(nj.Module):
 
     return metrics, carry_out
 
-  def report_wm_prediction_error(self, data):
-    self.config.jax.jit and embodied.print(
-        'Tracing report prediction metrics function', color='yellow')
-    data = self.preprocess(data)
-    actions = jaxutils.onehot_dict({k:v for k,v in data.items() if k in self.act_space}, self.act_space)
-    data['stoch'] =  f32(jax.nn.one_hot(data['stoch'], self.config.dyn.rssm.classes))
-    n_steps = self.config.wm_prediction_error_window
-    def compute_step_errors(step):
-      img_acts = treemap(lambda v: lax.dynamic_slice_in_dim(v, step, n_steps, axis=1), actions)
-      # true_obs is not per particle
-      data_slice = treemap(lambda v: lax.dynamic_slice_in_dim(v, step+1, n_steps, axis=1), data)
-
-      # vmap over particles and compute losses
-      def compute_particle_pred_errors(particle_idx):
-        img_start = {'stoch': data['stoch'][:, particle_idx, step], 
-                     'deter': data['deter'][:, particle_idx, step]}
-        img_outs = self.dyn.imagine(img_start, img_acts)[1]
-        decoded_img_obs = dict(**self.dec(img_outs))
-        # assume nll is the prediction error
-        pred_errors = treemap(lambda v, t: -v.log_prob(t.astype(f32)), decoded_img_obs, {k: data_slice[k] for k in decoded_img_obs})
-        return pred_errors
-
-      pred_errors = jax.vmap(compute_particle_pred_errors)(jnp.arange(self.config.n_particles))
-      pred_errors = {k: v.reshape(-1, self.config.n_particles, n_steps) for k, v in pred_errors.items()}
-      # compute mean step error over particles
-      pred_errors = {k: jnp.mean(v, axis=1) for k, v in pred_errors.items()}
-
-      cumulative_terminal = jnp.cumsum(data_slice['is_terminal'], axis=1)
-      valid_mask = (cumulative_terminal == 0)
-      
-      # Zero out losses after terminal state
-      masked_errors = {k: v * valid_mask for k, v in pred_errors.items()}
-      
-      # Count valid items in each step
-      valid_steps = jnp.sum(valid_mask, axis=0)
-      
-      # Compute mean and number of items for each step loss
-      error_stats = treemap(
-          lambda v: {
-              'mean': jnp.sum(v, axis=0) / valid_steps,
-              'weight': valid_steps,
-          },
-          masked_errors
-      )
-      return error_stats
-    wm_prediction_errors = jax.vmap(compute_step_errors)(jnp.arange(self.config.batch_length_eval - n_steps - 1))
-    wm_prediction_errors = treemap(
-        lambda v: {
-            'mean': (v['mean'] * v['weight']).sum(axis=0) / v['weight'].sum(axis=0),
-            'weight': v['weight'].sum(axis=0)
-        },
-        wm_prediction_errors,
-        is_leaf=lambda x: isinstance(x, dict) and 'mean' in x and 'weight' in x
-    )
-    return wm_prediction_errors
-
   def preprocess(self, obs):
     spaces = {**self.obs_space, **self.act_space, **self.aux_spaces}
     result = {}

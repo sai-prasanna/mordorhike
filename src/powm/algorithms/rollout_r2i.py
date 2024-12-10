@@ -157,7 +157,7 @@ def main(argv=None):
             episodes=episodes
         )
 
-    logger.close()
+    env.close()
 
 
 if __name__ == "__main__":
