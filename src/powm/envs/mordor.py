@@ -423,7 +423,7 @@ class MordorHike(gym.Env):
     def _create_background(self):
         height, width = self.render_size
         x = np.linspace(self.map_lower_bound[0], self.map_upper_bound[0], width)
-        y = np.linspace(self.map_lower_bound[1], self.map_upper_bound[1], height)
+        y = np.linspace(self.map_upper_bound[1], self.map_lower_bound[1], height)
         X, Y = np.meshgrid(x, y)
         positions = np.stack([X, Y], axis=-1)
         Z = self._altitude(positions.reshape(-1, 2)).reshape(height, width)
@@ -571,6 +571,22 @@ class MordorHike(gym.Env):
         # Choose the most probable action for the first step
         return np.argmax(log_probs[0])
 
+    def discretize_belief(self, belief, grid_x_y_size=0.1):
+        n_bins_x = np.ceil((self.map_upper_bound[0] - self.map_lower_bound[0]) / grid_x_y_size).astype(int)
+        n_bins_y = np.ceil((self.map_upper_bound[1] - self.map_lower_bound[1]) / grid_x_y_size).astype(int)
+        
+        # Use numpy's histogram2d for better binning
+        grid, _, _ = np.histogram2d(
+            belief[:, 0],  # x coordinates
+            belief[:, 1],  # y coordinates
+            bins=[n_bins_x, n_bins_y],
+            range=[
+                [self.map_lower_bound[0], self.map_upper_bound[0]],
+                [self.map_lower_bound[1], self.map_upper_bound[1]]
+            ],
+            density=True  # This automatically normalizes the histogram
+        )
+        return grid / grid.sum()
 
 def main():
     """

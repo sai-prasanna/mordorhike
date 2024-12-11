@@ -8,9 +8,12 @@ dependencies = [
     "colorama>=0.4.6",
     "dreamerv3",
     "gymnasium>=0.29",
+    "ipykernel>=6.29.5",
     "matplotlib>=3.9.2",
     "opencv-python>=4.10.0.84",
     "recall2imagine",
+    "scikit-learn>=1.6.0",
+    "seaborn>=0.13.2",
     "storm-wm",
     "tensorboardx>=2.6.2.2",
     "torch>=2.4.1",
@@ -29,6 +32,9 @@ train-r2i = "powm.algorithms.train_r2i:main"
 rollout-r2i = "powm.algorithms.rollout_r2i:main"
 train-storm = "powm.algorithms.train_storm:main"
 rollout-storm = "powm.algorithms.rollout_storm:main"
+train-drqn = "powm.algorithms.train_drqn:main"
+rollout-drqn = "powm.algorithms.rollout_drqn:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
