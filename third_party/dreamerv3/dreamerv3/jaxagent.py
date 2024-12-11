@@ -85,7 +85,6 @@ class JAXAgent(embodied.Agent):
       self._lower_report()
       self._train = self._train.compile()
       self._report = self._report.compile()
-      self._report_wm_prediction_error = self._report_wm_prediction_error.compile()
     self._stack = jax.jit(lambda xs: jax.tree.map(
         jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)))
     self._split = jax.jit(lambda xs: jax.tree.map(
