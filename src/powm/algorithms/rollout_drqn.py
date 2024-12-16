@@ -5,14 +5,9 @@ from tqdm import tqdm
 import ruamel.yaml as yaml
 from powm.algorithms.train_drqn import build_vec_env, DRQNAgent, make_logger
 
-def collect_rollouts(logger, agent, config, num_episodes):
+def collect_rollouts(agent, config, num_episodes):
     episode_data = []
-    scores = []
-    lengths = []
-    returns = []
-    success = []
-    latents = []
-    
+
     # Create vectorized environment
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
     env_kwargs["estimate_belief"] = True
@@ -44,21 +39,14 @@ def collect_rollouts(logger, agent, config, num_episodes):
             
             done = terminated[i] or truncated[i]
             if done and rolled_out_episodes < num_episodes:
-                rewards = np.array(episodes[i]["reward"])
-                discounts = config.train.gamma ** np.arange(len(rewards))
-                discounted_return = np.sum(rewards * discounts)
-                score = sum(rewards)
-                length = len(rewards)   
-                returns.append(discounted_return)
-                scores.append(score)
-                lengths.append(length)
-                success.append(terminated[i])
+                
                 
                 episodes[i]["state"] = np.array(episodes[i]["state"])
                 episodes[i]["obs"] = np.array(episodes[i]["obs"])
                 episodes[i]["action"] = np.array(episodes[i]["action"])
                 episodes[i]["reward"] = np.array(episodes[i]["reward"])
                 episodes[i]["latent"] = np.array(episodes[i]["latent"])
+                episodes[i]["success"] = terminated[i]
                 
 
                 episode_data.append(episodes[i])
@@ -72,19 +60,6 @@ def collect_rollouts(logger, agent, config, num_episodes):
                 episodes[i] = defaultdict(list)
                 rolled_out_episodes += 1
         current_obs = next_obs
-
-    # Log statistics
-    if logger is not None:
-        logger.add({
-            'score_mean': np.mean(scores),
-            'score_std': np.std(scores),
-            'length_mean': np.mean(lengths),
-            'length_std': np.std(lengths),
-            'return_mean': np.mean(returns),
-            'return_std': np.std(returns),
-        })
-        logger.write()
-
     vec_env.close()
     return episode_data
 
@@ -135,7 +110,6 @@ def main(argv=None):
         # Collect rollouts
         with torch.no_grad():
             episodes = collect_rollouts(
-                logger,
                 agent,
                 config,
                 num_episodes=110  # Number of episodes to collect

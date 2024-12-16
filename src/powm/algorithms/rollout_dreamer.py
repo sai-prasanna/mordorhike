@@ -12,7 +12,7 @@ from dreamerv3 import jaxutils
 from powm.algorithms.train_dreamer import make_env, make_logger
 
 
-def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episodes):
+def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes):
     episodes_data = []
     current_episodes = {i: defaultdict(list) for i in range(driver.length)}
     scores = []
@@ -101,6 +101,7 @@ def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episode
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
                 'latents': latents,
+                "success": tran["is_terminal"]
             })
             current_episode.clear()
 
@@ -109,24 +110,11 @@ def collect_rollouts(logger, agent, config, driver: embodied.Driver, num_episode
     driver.on_step(log_step)
     driver(agent.policy, episodes=num_episodes)
 
-    # Log statistics
-    if logger is not None:
-        logger.add({
-            'score_mean': np.mean(scores),
-            'score_std': np.std(scores),
-            'length_mean': np.mean(lengths),
-            'length_std': np.std(lengths),
-            'return_mean': np.mean(returns),
-            'return_std': np.std(returns),
-        })
-        logger.write()
-
     return episodes_data
 
 def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
-        metric_dir="eval",
         policy_mode="train",
     ).parse_known(argv)
     assert parsed.logdir, "Logdir is required"
@@ -143,7 +131,6 @@ def main(argv=None):
     # Create the environment once
     env = make_env(config, index=0)
     agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
-    logger = make_logger(config, metric_dir=parsed.metric_dir)
     env.close()
 
     fns = [bind(make_env, config, index=i, estimate_belief=True) for i in range(config.run.num_envs)]
@@ -153,23 +140,20 @@ def main(argv=None):
     checkpoint.step = embodied.Counter()
     for ckpt_path in sorted(ckpt_paths, key=lambda x: int(x.stem.split("_")[-1])):
         checkpoint.load(ckpt_path, keys=["agent", "step"])
-        logger.step = checkpoint.step
         # Collect training data
         episodes = collect_rollouts(
-            logger,
             agent,
             config,
             driver,
             110,  # num training episodes
         )
         # Save episode data
-        ckpt_number = int(logger.step)
+        ckpt_number = int(checkpoint.step)
         np.savez(
             f"{parsed.logdir}/episodes_{ckpt_number}.npz",
             episodes=episodes,
         )
 
-    logger.close()
     driver.close()
 
 

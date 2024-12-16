@@ -9,7 +9,7 @@ from storm_wm.utils import seed_np_torch
 import ruamel.yaml as yaml
 from powm.algorithms.train_storm import build_single_env, build_vec_env
 
-def collect_rollouts(logger, agent, world_model, config, num_episodes):
+def collect_rollouts(agent, world_model, config, num_episodes):
     episodes_data = []
     current_episode = defaultdict(list)
     scores = []
@@ -138,23 +138,11 @@ def collect_rollouts(logger, agent, world_model, config, num_episodes):
                 # Timesteps x particles x future_prediction_timesteps x obs_dim
                 current_episode["obs_hat"] = np.array(imagined_trajectories)[0][:, np.newaxis, ...]
                 current_episode["state"] = np.array(current_episode["state"])[:, 0]
+                current_episode["success"] = terminated
                 episodes_data.append(dict(current_episode))
                 current_episode = defaultdict(list)
             
             current_obs = obs
-
-    # Log statistics (unchanged)
-    if logger is not None:
-        logger.add({
-            'score_mean': np.mean(scores),
-            'score_std': np.std(scores),
-            'length_mean': np.mean(lengths),
-            'length_std': np.std(lengths),
-            'return_mean': np.mean(returns),
-            'return_std': np.std(returns),
-        })
-        logger.write()
-
     vec_env.close()
     return episodes_data
 
@@ -190,14 +178,9 @@ def main(argv=None):
         step = int(ckpt_path.stem.split("_")[-1])
         world_model.load_state_dict(torch.load(str(ckpt_path)))
         agent.load_state_dict(torch.load(str(logdir / f"agent_{step}.pth")))
-        
-        # Create logger
-        logger = embodied.Logger(parsed.logdir, step, config)
-        
         # Collect rollouts
         with torch.no_grad():
             episodes = collect_rollouts(
-                logger,
                 agent,
                 world_model, 
                 config,
@@ -210,7 +193,6 @@ def main(argv=None):
             episodes=episodes
         )
         
-        logger.close()
 
 if __name__ == "__main__":
     main()

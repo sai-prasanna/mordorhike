@@ -3,14 +3,13 @@ from collections import defaultdict
 import re
 
 import numpy as np
-import torch
 import recall2imagine
 from recall2imagine import embodied
 
 from powm.algorithms.train_r2i import make_logger, make_envs
 
 
-def collect_rollouts(logger, agent, config, env, num_episodes):
+def collect_rollouts(agent, config, env, num_episodes):
     episodes_data = []
     worker_episodes = defaultdict(lambda: defaultdict(list))
     scores = []
@@ -90,24 +89,12 @@ def collect_rollouts(logger, agent, config, env, num_episodes):
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
                 'latents': latents,
+                "success": tran["is_terminal"]
             })
             current_episode.clear()
 
     driver.on_step(log_step)
     driver(agent.policy, episodes=num_episodes, record_state=True)
-
-    # Log statistics
-    if logger is not None:
-        logger.add({
-            'score_mean': np.mean(scores),
-            'score_std': np.std(scores),
-            'length_mean': np.mean(lengths),
-            'length_std': np.std(lengths),
-            'return_mean': np.mean(returns),
-            'return_std': np.std(returns),
-        })
-        logger.write()
-
     return episodes_data
 
 
@@ -142,7 +129,6 @@ def main(argv=None):
         
         # Collect training data
         episodes = collect_rollouts(
-            logger,
             agent,
             config,
             env,
