@@ -20,7 +20,6 @@ def collect_rollouts(agent, config, num_episodes):
     agent_state = agent.init_state(batch_size=len(current_obs))
     
     rolled_out_episodes = 0
-    current_dones = [False] * config.train.num_envs
     episodes = defaultdict(lambda: defaultdict(list))
     while rolled_out_episodes < num_episodes:
         with torch.no_grad():
@@ -28,10 +27,6 @@ def collect_rollouts(agent, config, num_episodes):
             action, agent_state = agent.policy(obs_tensor, agent_state, epsilon=0.0)
         
         for i in range(len(current_obs)):
-            if current_dones[i]:
-                # This is required as the environment is reset after current_dones[i] is set to True
-                # so the info would correspond to the last step of the episode instead of the reset step
-                continue
             episodes[i]["state"].append(infos["state"][i])
             episodes[i]["belief"].append(infos["belief"][i])
 
@@ -39,10 +34,6 @@ def collect_rollouts(agent, config, num_episodes):
         next_obs, reward, terminated, truncated, infos = vec_env.step(action)
         
         for i in range(len(current_obs)):
-            if current_dones[i]:
-                # If the episode is done, then the step would be reseting the environment, 
-                # so action and reward would be invalid.
-                continue
             episodes[i]["obs"].append(current_obs[i])
             episodes[i]["action"].append(action[i])
             episodes[i]["reward"].append(reward[i])
@@ -76,9 +67,9 @@ def collect_rollouts(agent, config, num_episodes):
 
                 episodes[i] = defaultdict(list)
                 rolled_out_episodes += 1
-        
-        current_obs = next_obs
-        current_dones = [d or t for d, t in zip(terminated, truncated)]
+                current_obs[i], infos[i]  = infos[i]['new_obs'], infos[i]['new_info']
+            else:
+                current_obs[i] = next_obs[i]
     vec_env.close()
     return episode_data
 

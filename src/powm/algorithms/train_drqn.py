@@ -1,7 +1,10 @@
-import argparse
-import os
+import multiprocessing
+import traceback
 from collections import defaultdict
+from multiprocessing import Queue
+from multiprocessing.connection import Connection
 from random import choices, random
+from typing import Any
 
 import gymnasium
 import numpy as np
@@ -11,7 +14,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dreamerv3 import embodied
 from dreamerv3.embodied.core import logger as embodied_logger
+from gymnasium.spaces.utils import is_space_dtype_shape_equiv
 from gymnasium.vector import AsyncVectorEnv
+from gymnasium.vector.utils import write_to_shared_memory
 from tqdm import tqdm
 
 import powm.envs
@@ -391,10 +396,10 @@ def build_vec_env(env_name, env_kwargs, seed, num_envs=4):
             return env
         return _init
     
-    return AsyncVectorEnv([make_env(i) for i in range(num_envs)])
+    return AsyncVectorEnv([make_env(i) for i in range(num_envs)], worker=_async_worker)
 
 def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
-    num_envs = config.train.num_envs
+    num_envs = 1
     env = build_vec_env(env_name, env_kwargs, seed=config.seed, num_envs=num_envs)
     buffer = ReplayBuffer(config.train.buffer_capacity)
     
@@ -415,7 +420,7 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
     max_steps = config.train.steps
 
     # Initialize environment and trajectories
-    current_obs = env.reset()[0]  # Shape: (num_envs, obs_dim)
+    current_obs, _ = env.reset()  # Shape: (num_envs, obs_dim)
     trajectories = [
         Trajectory(env.single_action_space.n, env.single_observation_space.shape[0]) 
         for _ in range(num_envs)
@@ -424,7 +429,6 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
         trajectories[i].add(None, None, current_obs[i])
    
     agent_states = agent.init_state(num_envs)  # Now returns (prev_actions, hidden)
-    dones = [False] * num_envs
     should_save(logger.step) # So we don't save 0th checkpoint
     
     for _ in tqdm(range(max_steps)):
@@ -437,19 +441,16 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
             obs_batch = torch.tensor(current_obs, dtype=torch.float32).to(agent.device)
             actions, agent_states = agent.policy(obs_batch, agent_states, epsilon=config.train.epsilon)
             
-        o_next, rewards, terminated, truncated, _ = env.step(actions)
+        o_next, rewards, terminated, truncated, info = env.step(actions)
         
         # Update trajectories
         for i in range(num_envs):
-            if dones[i]:
-                continue
             trajectories[i].add(actions[i], rewards[i], o_next[i], terminal=terminated[i])
 
         current_obs = o_next
-        dones = [terminated[i] or truncated[i] for i in range(num_envs)]
         # Handle completed episodes
         for i in range(num_envs):
-            if dones[i]:
+            if terminated[i] or truncated[i]:
                 # Add trajectory to buffer and log stats
                 score = trajectories[i].get_cumulative_reward(gamma=config.train.gamma)
                 length = trajectories[i].num_transitions
@@ -465,7 +466,7 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
 
                 buffer.add(trajectories[i])
                 num_transitions += trajectories[i].num_transitions
-
+                current_obs[i] = info['new_obs'][i]
                 # Reset trajectory and state for this environment
                 trajectories[i] = Trajectory(env.single_action_space.n, env.single_observation_space.shape[0])
                 trajectories[i].add(None, None, current_obs[i])
@@ -473,6 +474,10 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
                 # Reset both previous action and hidden state for this environment
                 agent_states[0][i].zero_()  # Reset previous action
                 agent_states[1][:, i].zero_()  # Reset hidden state
+                # when we make vecenv with more than 1 env, we have to fix this
+                # vecenv resets with a dummy action after a terminal step
+                # this messes up batching of actions from agent policy
+                
         # Training step every N environment steps
         if buffer.ready and should_train(logger.step):
             for _ in range(config.train.num_gradient_steps):
@@ -510,6 +515,106 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
 
 
     env.close()
+
+
+
+def _async_worker(
+    index: int,
+    env_fn: callable,
+    pipe: Connection,
+    parent_pipe: Connection,
+    shared_memory: dict[str, Any] | tuple[Any, ...],
+    error_queue: Queue,
+):
+    env = env_fn()
+    observation_space = env.observation_space
+    action_space = env.action_space
+
+    parent_pipe.close()
+
+    try:
+        while True:
+            command, data = pipe.recv()
+
+            if command == "reset":
+                observation, info = env.reset(**data)
+                if shared_memory:
+                    write_to_shared_memory(
+                        observation_space, index, observation, shared_memory
+                    )
+                    observation = None
+                pipe.send(((observation, info), True))
+            elif command == "step":
+
+                (
+                    observation,
+                    reward,
+                    terminated,
+                    truncated,
+                    info,
+                ) = env.step(data)
+                if terminated or truncated:
+                    next_obs, next_info = env.reset()
+                    info['new_obs'] = next_obs
+                    info['new_info'] = next_info
+
+                if shared_memory:
+                    write_to_shared_memory(
+                        observation_space, index, observation, shared_memory
+                    )
+                    observation = None
+
+                pipe.send(((observation, reward, terminated, truncated, info), True))
+            elif command == "close":
+                pipe.send((None, True))
+                break
+            elif command == "_call":
+                name, args, kwargs = data
+                if name in ["reset", "step", "close", "_setattr", "_check_spaces"]:
+                    raise ValueError(
+                        f"Trying to call function `{name}` with `call`, use `{name}` directly instead."
+                    )
+
+                attr = env.get_wrapper_attr(name)
+                if callable(attr):
+                    pipe.send((attr(*args, **kwargs), True))
+                else:
+                    pipe.send((attr, True))
+            elif command == "_setattr":
+                name, value = data
+                env.set_wrapper_attr(name, value)
+                pipe.send((None, True))
+            elif command == "_check_spaces":
+                obs_mode, single_obs_space, single_action_space = data
+
+                pipe.send(
+                    (
+                        (
+                            (
+                                single_obs_space == observation_space
+                                if obs_mode == "same"
+                                else is_space_dtype_shape_equiv(
+                                    single_obs_space, observation_space
+                                )
+                            ),
+                            single_action_space == action_space,
+                        ),
+                        True,
+                    )
+                )
+            else:
+                raise RuntimeError(
+                    f"Received unknown command `{command}`. Must be one of [`reset`, `step`, `close`, `_call`, `_setattr`, `_check_spaces`]."
+                )
+    except (KeyboardInterrupt, Exception):
+        error_type, error_message, _ = sys.exc_info()
+        trace = traceback.format_exc()
+
+        error_queue.put((index, error_type, error_message, trace))
+        pipe.send((None, False))
+    finally:
+        env.close()
+
 
 def main(argv=None):
     # Load configs
