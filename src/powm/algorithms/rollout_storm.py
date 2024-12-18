@@ -1,7 +1,7 @@
 from collections import defaultdict
 import numpy as np
 from collections import deque
-
+import tqdm
 from einops import rearrange
 import torch
 from storm_wm.utils import seed_np_torch
@@ -19,60 +19,60 @@ def collect_rollouts(agent, world_model, config, num_episodes):
     # Create vectorized environment
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
     env_kwargs["estimate_belief"] = True
-    vec_env = build_vec_env(config.env.name, 1, config.seed, env_kwargs)
-    
-    current_obs, info = vec_env.reset()
-    context_obs = deque(maxlen=16)
-    context_action = deque(maxlen=16)
+    # We fix the number of environments to 1 as handling context 
+    # for multiple environments with transformer is not done yet.
+    env = build_vec_env(config.env.name, 1, config.seed, env_kwargs)
+    context_obs = []
+    context_action = []
     
     IMAGINE_STEPS = 5
     
     # Collect episodes
-    for _ in range(num_episodes):
+    for _ in tqdm.tqdm(range(num_episodes)):
         done = False
+        current_obs, info = env.reset()
         while not done:
             # Regular episode collection (unchanged)
-            if len(context_action) == 0:
-                action = vec_env.action_space.sample()
-                current_latent = None
-            else:
-                context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1))
-                model_context_action = np.stack(list(context_action), axis=1)
-                model_context_action = torch.Tensor(model_context_action).cuda()
-                prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
-                    context_latent, model_context_action)
-                current_latent = torch.cat([prior_flattened_sample, last_dist_feat], dim=-1)
-                action = agent.sample_as_env_action(
-                    current_latent,
-                    greedy=False
-                )
-
+            
             if world_model.encoder_type == "cnn":
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
             else:
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B D -> B 1 D"))
+            if len(context_action) == 0:
+                context_action = [env.action_space.sample()]
+            
+            
+            context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1))
+            model_context_action = np.stack(list(context_action), axis=1)
+            model_context_action = torch.tensor(model_context_action).cuda()
+            prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
+                context_latent, model_context_action)
+            current_latent = torch.cat([prior_flattened_sample, last_dist_feat], dim=-1)
+            action = agent.sample_as_env_action(
+                current_latent,
+                greedy=False
+            )
+
             context_action.append(action)
             current_episode["state"].append(info["state"])
             current_episode["belief"].append(info["belief"])
-            obs, reward, terminated, truncated, info = vec_env.step(action)
-            done = terminated or truncated
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = np.logical_or(terminated, truncated)
             
             current_episode["obs"].append(current_obs)
             current_episode["action"].append(action)
             current_episode["reward"].append(reward)
-            if current_latent is not None:
-                current_episode["latent"].append(current_latent.cpu().numpy())
-            else:
-                wm_dim = config.world_model.transformer_hidden_dim + 32*32
-                current_episode["latent"].append(np.zeros((1, 1, wm_dim)))
-            
-            if done:
+            current_episode["latent"].append(current_latent.cpu().numpy())
+
+            if done[0]:
                 rewards = np.array(current_episode["reward"])
                 # Episode statistics (unchanged)
                 score = sum(rewards)
                 length = len(rewards)
                 scores.append(score)
                 lengths.append(length)
+                context_obs = []
+                context_action = []
                 
                 discount_factor = config.agent.gamma
                 discounts = discount_factor ** np.arange(len(rewards))
@@ -138,12 +138,12 @@ def collect_rollouts(agent, world_model, config, num_episodes):
                 # Timesteps x particles x future_prediction_timesteps x obs_dim
                 current_episode["obs_hat"] = np.array(imagined_trajectories)[0][:, np.newaxis, ...]
                 current_episode["state"] = np.array(current_episode["state"])[:, 0]
-                current_episode["success"] = terminated
+                current_episode["success"] = terminated[0]
                 episodes_data.append(dict(current_episode))
                 current_episode = defaultdict(list)
             
             current_obs = obs
-    vec_env.close()
+    env.close()
     return episodes_data
 
 def main(argv=None):
@@ -152,6 +152,7 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         metric_dir="eval",
+        collect_n_episodes=110,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -184,7 +185,7 @@ def main(argv=None):
                 agent,
                 world_model, 
                 config,
-                110  # num episodes
+                parsed.collect_n_episodes
             )
             
         # Save episode data

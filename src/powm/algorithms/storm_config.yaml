@@ -4,7 +4,7 @@ defaults:
   image_size: 64
   replay_buffer_on_gpu: true
   logdir: logs/storm/{timestamp}
-
+  filter: '.*'
   # Environment Settings
   env:
     name: "mordor-hike-medium-v0"

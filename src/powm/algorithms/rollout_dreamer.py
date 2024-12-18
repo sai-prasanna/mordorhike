@@ -100,7 +100,7 @@ def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes):
             del current_episode['_stoch']
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
-                'latents': latents,
+                'latent': latents,
                 "success": tran["is_terminal"]
             })
             current_episode.clear()
@@ -116,6 +116,7 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         policy_mode="train",
+        collect_n_episodes=110,
     ).parse_known(argv)
     assert parsed.logdir, "Logdir is required"
     logdir = embodied.Path(parsed.logdir)
@@ -145,7 +146,7 @@ def main(argv=None):
             agent,
             config,
             driver,
-            110,  # num training episodes
+            parsed.collect_n_episodes,  # num training episodes
         )
         # Save episode data
         ckpt_number = int(checkpoint.step)

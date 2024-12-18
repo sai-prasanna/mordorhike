@@ -1,25 +1,21 @@
+import argparse
 import os
+from collections import defaultdict
+from random import choices, random
+
+import gymnasium
+import numpy as np
+import ruamel.yaml as yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from random import random, choices
-import gymnasium
-import argparse
-import numpy as np
-import torch
-from collections import defaultdict
+from dreamerv3 import embodied
+from dreamerv3.embodied.core import logger as embodied_logger
+from gymnasium.vector import AsyncVectorEnv
 from tqdm import tqdm
 
-
-from dreamerv3.embodied.core import logger as embodied_logger
-from dreamerv3 import embodied
-import ruamel.yaml as yaml
-
-from powm.algorithms.train_dreamer import VideoOutput
 import powm.envs
-from gymnasium.vector import AsyncVectorEnv
-
+from powm.algorithms.train_dreamer import VideoOutput
 
 
 class RNN(nn.Module):
@@ -428,7 +424,7 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
         trajectories[i].add(None, None, current_obs[i])
    
     agent_states = agent.init_state(num_envs)  # Now returns (prev_actions, hidden)
-    dones = None
+    dones = [False] * num_envs
     should_save(logger.step) # So we don't save 0th checkpoint
     
     for _ in tqdm(range(max_steps)):
@@ -442,14 +438,15 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
             actions, agent_states = agent.policy(obs_batch, agent_states, epsilon=config.train.epsilon)
             
         o_next, rewards, terminated, truncated, _ = env.step(actions)
-        dones = [term or trunc for term, trunc in zip(terminated, truncated)]
         
         # Update trajectories
         for i in range(num_envs):
+            if dones[i]:
+                continue
             trajectories[i].add(actions[i], rewards[i], o_next[i], terminal=terminated[i])
 
         current_obs = o_next
-
+        dones = [terminated[i] or truncated[i] for i in range(num_envs)]
         # Handle completed episodes
         for i in range(num_envs):
             if dones[i]:
@@ -476,7 +473,6 @@ def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
                 # Reset both previous action and hidden state for this environment
                 agent_states[0][i].zero_()  # Reset previous action
                 agent_states[1][:, i].zero_()  # Reset hidden state
-
         # Training step every N environment steps
         if buffer.ready and should_train(logger.step):
             for _ in range(config.train.num_gradient_steps):

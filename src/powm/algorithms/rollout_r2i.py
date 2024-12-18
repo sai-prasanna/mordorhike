@@ -71,8 +71,11 @@ def collect_rollouts(agent, config, env, num_episodes):
             )
             num_keys = len(predictions)
             for k, v in predictions.items():
-                key = f"pred_{k}" if num_keys == 1 else f"pred_{k}"
-                current_episode[key].append(v)
+                key = f"obs_hat" if num_keys == 1 else f"pred_{k}"
+                # Swap timestep and batch dimensions
+                # the batch becomes a dummy particle dimension
+                v = v.swapaxes(0, 1)
+                current_episode[key] = v
             # Create one-hot latents for storage
             deter = np.array(current_episode['deter'])
             stoch = np.array(current_episode['stoch'])
@@ -86,9 +89,12 @@ def collect_rollouts(agent, config, env, num_episodes):
                 del current_episode[k]
             
             # Store episode data with predictions
+            # Convert action to discrete
+            current_episode["action"] = np.argmax(current_episode["action"], axis=-1)
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
-                'latents': latents,
+                # Add a dummy particle dimension
+                'latent': latents[:, np.newaxis, ...], 
                 "success": tran["is_terminal"]
             })
             current_episode.clear()
@@ -102,6 +108,7 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         metric_dir="eval",
+        collect_n_episodes=110,
     ).parse_known(argv)
     assert parsed.logdir, "Logdir is required"
     logdir = embodied.Path(parsed.logdir)
@@ -132,7 +139,7 @@ def main(argv=None):
             agent,
             config,
             env,
-            110,  # num training episodes
+            parsed.collect_n_episodes,  # num training episodes
         )
         
         # Save episode data

@@ -2,6 +2,7 @@ defaults:
   # Logging and checkpoint configurations
   logdir: logs/drqn/{timestamp}
   device: cuda
+  filter: '.*'
 
   train:
     steps: 500000  # Total number of training steps

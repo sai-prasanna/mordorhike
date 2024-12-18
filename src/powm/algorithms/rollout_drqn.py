@@ -1,9 +1,12 @@
-import torch
-import numpy as np
 from collections import defaultdict
-from tqdm import tqdm
+
+import numpy as np
 import ruamel.yaml as yaml
-from powm.algorithms.train_drqn import build_vec_env, DRQNAgent, make_logger
+import torch
+from tqdm import tqdm
+
+from powm.algorithms.train_drqn import DRQNAgent, build_vec_env, make_logger
+
 
 def collect_rollouts(agent, config, num_episodes):
     episode_data = []
@@ -17,7 +20,7 @@ def collect_rollouts(agent, config, num_episodes):
     agent_state = agent.init_state(batch_size=len(current_obs))
     
     rolled_out_episodes = 0
-
+    current_dones = [False] * config.train.num_envs
     episodes = defaultdict(lambda: defaultdict(list))
     while rolled_out_episodes < num_episodes:
         with torch.no_grad():
@@ -25,41 +28,57 @@ def collect_rollouts(agent, config, num_episodes):
             action, agent_state = agent.policy(obs_tensor, agent_state, epsilon=0.0)
         
         for i in range(len(current_obs)):
+            if current_dones[i]:
+                # This is required as the environment is reset after current_dones[i] is set to True
+                # so the info would correspond to the last step of the episode instead of the reset step
+                continue
             episodes[i]["state"].append(infos["state"][i])
             episodes[i]["belief"].append(infos["belief"][i])
-            
-        
+
+
         next_obs, reward, terminated, truncated, infos = vec_env.step(action)
         
         for i in range(len(current_obs)):
+            if current_dones[i]:
+                # If the episode is done, then the step would be reseting the environment, 
+                # so action and reward would be invalid.
+                continue
             episodes[i]["obs"].append(current_obs[i])
             episodes[i]["action"].append(action[i])
             episodes[i]["reward"].append(reward[i])
-            episodes[i]["latent"].append(agent_state[1][:, i].cpu().numpy())
+            
+            latent = agent_state[1][:, i].cpu().numpy()
+            # add particle dim and collapse the 
+            # gru layer dim into single final dim
+            latent = latent.reshape(latent.shape[0], 1, -1)
+            episodes[i]["latent"].append(latent)
             
             done = terminated[i] or truncated[i]
             if done and rolled_out_episodes < num_episodes:
-                
-                
                 episodes[i]["state"] = np.array(episodes[i]["state"])
                 episodes[i]["obs"] = np.array(episodes[i]["obs"])
                 episodes[i]["action"] = np.array(episodes[i]["action"])
                 episodes[i]["reward"] = np.array(episodes[i]["reward"])
                 episodes[i]["latent"] = np.array(episodes[i]["latent"])
-                episodes[i]["success"] = terminated[i]
+                episodes[i]["belief"] = np.array(episodes[i]["belief"])
+                episodes[i]["success"] = np.array(terminated[i])
                 
 
                 episode_data.append(episodes[i])
                 prev_actions, prev_hiddens = agent_state
                 
                 worker_state = agent.init_state(batch_size=1)
-                prev_actions[i] = worker_state[0]
-                prev_hiddens[:, i] = worker_state[1]
+                prev_actions[i] = worker_state[0][0]
+                # for hidden state it's layers x batch size x hidden size
+                # so we need to index the batch in the second dimension
+                prev_hiddens[:, i] = worker_state[1][:, 0]
                 agent_state = (prev_actions, prev_hiddens)
 
                 episodes[i] = defaultdict(list)
                 rolled_out_episodes += 1
+        
         current_obs = next_obs
+        current_dones = [d or t for d, t in zip(terminated, truncated)]
     vec_env.close()
     return episode_data
 
@@ -68,6 +87,7 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         metric_dir="eval",
+        collect_n_episodes=110,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -103,16 +123,13 @@ def main(argv=None):
         logger.step = embodied.Counter(checkpoint["step"])
         agent.load_state_dict(checkpoint["agent"])
         agent.eval()
-        
-        # Create logger
-        logger = embodied.Logger(parsed.logdir, step, config)
-        
+
         # Collect rollouts
         with torch.no_grad():
             episodes = collect_rollouts(
                 agent,
                 config,
-                num_episodes=110  # Number of episodes to collect
+                num_episodes=parsed.collect_n_episodes  # Number of episodes to collect
             )
 
         # Save episode data
@@ -121,7 +138,6 @@ def main(argv=None):
             episodes=episodes
         )
 
-    logger.close()
 
 if __name__ == "__main__":
-    main()
+    main(["--logdir", "/home/sai/Desktop/powm/experiments/train_drqn_1"])
