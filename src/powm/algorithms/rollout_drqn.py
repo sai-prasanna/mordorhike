@@ -67,7 +67,9 @@ def collect_rollouts(agent, config, num_episodes):
 
                 episodes[i] = defaultdict(list)
                 rolled_out_episodes += 1
-                current_obs[i], infos[i]  = infos[i]['new_obs'], infos[i]['new_info']
+                current_obs[i]  = infos['new_obs'][i]
+                infos['belief'][i] = infos['new_info']['belief'][i]
+                infos['state'][i] = infos['new_info']['state'][i]
             else:
                 current_obs[i] = next_obs[i]
     vec_env.close()
@@ -90,9 +92,6 @@ def main(argv=None):
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
-    # Create logger
-    logger = make_logger(logdir=logdir, config=config)
-
     # Create agent
     vec_env = build_vec_env(config.env.name, yaml.YAML(typ="safe").load(config.env.kwargs) or {}, config.seed)
     action_size = vec_env.action_space[0].n
@@ -111,7 +110,6 @@ def main(argv=None):
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
         checkpoint = torch.load(str(ckpt_path))
-        logger.step = embodied.Counter(checkpoint["step"])
         agent.load_state_dict(checkpoint["agent"])
         agent.eval()
 
@@ -131,4 +129,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main(["--logdir", "/home/sai/Desktop/powm/experiments/train_drqn_1"])
+    main()
+
