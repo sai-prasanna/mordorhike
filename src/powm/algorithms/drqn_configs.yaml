@@ -10,10 +10,10 @@ defaults:
     learning_rate: 1e-4 # Learning rate for Adam optimizer
     batch_size: 32        # Batch size for training
     buffer_capacity: 500000 # Maximum number of trajectories in replay buffer
-    train_every: 80       # Train after every N environment steps
-    target_period: 800 # Update target every N steps
+    train_every: 81       # Train after every N environment steps
+    target_period: 810 # Update target every N steps
     num_gradient_steps: 10 # Number of gradient steps per training update
-    save_every: 100000   # Save checkpoint every N steps
+    save_every: 50000   # Save checkpoint every N steps
     epsilon: 0.2         # Exploration rate
     gamma: 0.99          # Discount factor
     num_envs: 1
@@ -33,7 +33,9 @@ defaults:
   
   # Weights & Biases logging configuration
   wandb:
-    project: ""  # Set project name to enable W&B logging
+    project: "powm"  # Set project name to enable W&B logging
+    group: ""
+    name: ""
 
 debug:
   # Minimal configuration for debugging
