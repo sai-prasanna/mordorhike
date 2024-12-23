@@ -1,24 +1,22 @@
-import gymnasium
 import argparse
-from tensorboardX import SummaryWriter
-import numpy as np
-from einops import rearrange
-import torch
-from collections import deque, defaultdict
-from tqdm import tqdm
+from collections import defaultdict, deque
 
 import colorama
-from dreamerv3.embodied.core import logger as embodied_logger
-from powm.algorithms.train_dreamer import VideoOutput
-from dreamerv3 import embodied
+import gymnasium
+import numpy as np
 import ruamel.yaml as yaml
-
-from storm_wm.utils import seed_np_torch
+import torch
+from dreamerv3 import embodied
+from dreamerv3.embodied.core import logger as embodied_logger
+from einops import rearrange
+from storm_wm import agents, env_wrapper
 from storm_wm.replay_buffer import ReplayBuffer
-from storm_wm import env_wrapper
-from storm_wm import agents
 from storm_wm.sub_models.world_models import WorldModel
+from storm_wm.utils import seed_np_torch
+from tensorboardX import SummaryWriter
+from tqdm import tqdm
 
+from powm.algorithms.train_dreamer import VideoOutput
 
 
 def make_logger(logdir: embodied.Path, config):
@@ -104,15 +102,16 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
                                   imagine_context_length, imagine_batch_length,
                                   save_every, log_every, seed, logger, ckpt_path):
 
-    assert num_envs == 1, "num_envs must be 1 for now"
     vec_env = build_vec_env(env_name, num_envs=num_envs, seed=seed, env_kwargs=env_kwargs)
     print("Current env: " + colorama.Fore.YELLOW + f"{env_name}" + colorama.Style.RESET_ALL)
 
     # reset envs and variables
     current_obs, _ = vec_env.reset()
-    context_obs = []
-    context_action = []
+    context_obs = deque(maxlen=16)
+    context_action = deque(maxlen=16)
     
+    # Add frame collection for video logging
+
     agg = embodied.Agg()
     epstats = embodied.Agg()
     episodes = defaultdict(embodied.Agg)
@@ -120,69 +119,59 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
     should_log = embodied.when.Every(log_every)
     should_save = embodied.when.Every(save_every)
     should_train_agent = embodied.when.Every(train_agent_every_steps)
-    
-    reset_ready = False
-    should_save(logger.step)
-    for _ in tqdm(range(max_steps//num_envs)):
+
+
+    for total_steps in tqdm(range(max_steps//num_envs)):
+        # Rest of your existing sampling code...
         if replay_buffer.ready():
-            if not reset_ready:
-                current_obs, _ = vec_env.reset()
-                reset_ready = True
-            if world_model.encoder_type == "cnn":
-                context_obs.append(torch.tensor(current_obs).cuda()/255)
-            else:
-                context_obs.append(torch.tensor(current_obs).cuda())
-            
             world_model.eval()
             agent.eval()
             with torch.no_grad():
                 if len(context_action) == 0:
-                    context_action = [torch.randint(0, vec_env.action_space[0].n, (1,))]  # Match env action type
-
-                context_latent = world_model.encode_obs(torch.cat([obs.unsqueeze(1) for obs in context_obs], dim=1))
-                model_context_action = np.stack(context_action, axis=1)
-                model_context_action = torch.Tensor(model_context_action).cuda()
-                prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
-                action = agent.sample_as_env_action(
-                    torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
-                    greedy=False
-                )
-
+                    action = vec_env.action_space.sample()
+                else:
+                    context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1))
+                    model_context_action = np.stack(list(context_action), axis=1)
+                    model_context_action = torch.Tensor(model_context_action).cuda()
+                    prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
+                    action = agent.sample_as_env_action(
+                        torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
+                        greedy=False
+                    )
+            if world_model.encoder_type == "cnn":
+                context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
+            else:
+                context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B D -> B 1 D"))
             context_action.append(action)
         else:
-            # random policy until replay buffer is filled to the warmup length
             action = vec_env.action_space.sample()
 
-        obs, reward, terminated, truncated, info = vec_env.step(action)
-        replay_buffer.append(current_obs, action, reward, np.logical_or(terminated, info.get("life_loss", False)))
-        done_flag = np.logical_or(terminated, truncated)
+        obs, reward, done, truncated, info = vec_env.step(action)
+        replay_buffer.append(current_obs, action, reward, np.logical_or(done, info.get("life_loss", False)))
+        done_flag = np.logical_or(done, truncated)
         frames = vec_env.render()
         
-        episode = episodes[0]
-        episode.add('score', reward[0], agg='sum')
-        episode.add('length', 1, agg='sum')
-        episode.add('policy_log_image', frames[0], agg='stack')
-        if done_flag[0]:
-            result = episode.result()
-            # discounted return
-            # compute the discounted return using gamma
-            logger.add({
-                'score': result.pop('score'),
-                'length': result.pop('length'),
-            }, prefix='episode')
-            
-            epstats.add(result)
-            episode.reset()
-            # Clear context when episode ends
-            context_obs = []
-            context_action = []
-            
-            # Reset the environment
-            current_obs, _ = vec_env.reset()
-        else:
-            current_obs = obs
-            
-        logger.step.increment()
+        for i in range(num_envs):
+            episode = episodes[i]
+            episode.add('score', reward[i], agg='sum')
+            episode.add('length', 1, agg='sum')
+            if i == 0:
+                episode.add('policy_log_image', frames[i], agg='stack')
+            if done_flag[i]:
+                result = episode.result()
+                # discounted return
+                # compute the discounted return using gamma
+                logger.add({
+                    'score': result.pop('score'),
+                    'length': result.pop('length'),
+                }, prefix='episode')
+                
+                epstats.add(result)
+                episode.reset()
+            logger.step.increment()
+        
+        # update current_obs, current_info and sum_reward
+        current_obs = obs
         
         if should_log(logger.step):
             logger.add(epstats.result(), prefix='epstats')
@@ -231,10 +220,6 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
             )
             logger.add(metrics, prefix="train")
 
-        if is_should_save:
-            print(colorama.Fore.GREEN + f"Saving model at total steps {logger.step.value}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), ckpt_path/f"world_model_{logger.step.value}.pth")
-            torch.save(agent.state_dict(), ckpt_path/f"agent_{logger.step.value}.pth")
 
 def build_world_model(conf, action_dim):
     return WorldModel(
