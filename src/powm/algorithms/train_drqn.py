@@ -1,10 +1,4 @@
-import sys
-import traceback
-from collections import defaultdict
-from multiprocessing import Queue
-from multiprocessing.connection import Connection
 from random import choices, random
-from typing import Any
 
 import gymnasium
 import numpy as np
@@ -14,29 +8,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dreamerv3 import embodied
 from dreamerv3.embodied.core import logger as embodied_logger
-from gymnasium.spaces.utils import is_space_dtype_shape_equiv
-from gymnasium.vector import AsyncVectorEnv
-from gymnasium.vector.utils import write_to_shared_memory
-from tqdm import tqdm
 
 import powm.envs
 from powm.algorithms.train_dreamer import VideoOutput
 
 
-class RNN(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, num_layers):
+class GRU(nn.Module):
+    """
+    Gated Recurrent Unit.
+
+    Arguments:
+    - input_size: int
+        The input size.
+    - hidden_size: int
+        The hidden state size.
+    - num_layers: int
+        The number of layers.
+    - output_size: int
+        The output size.
+    """
+    num_states = 1
+
+    def __init__(self, input_size, hidden_size, num_layers, output_size):
         super().__init__()
-        self.rnn = nn.GRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-        )
-        self.head = nn.Linear(hidden_size, output_size)
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.output_size = output_size
+
+        self.rnn = nn.GRU(input_size, hidden_size, num_layers)
+        self.linear = nn.Linear(hidden_size, output_size)
 
     def forward(self, x, h=None):
+        """
+        Computes the forward pass on the sequence using the hidden state if
+        provided.
+
+        Arguments:
+        - x: tensor
+            Input sequence
+        - h: tuple of tensor
+            Initial hidden state
+
+        Returns:
+        - x: tensor
+            Output sequence
+        - h: tuple of tensor
+            Final hidden state
+        """
+        if h is not None:
+            h, = h
         x, h = self.rnn(x, h)
-        return self.head(x), h
+        x = self.linear(x)
+        return x, (h,)
+
 
 class Trajectory:
     """
@@ -77,12 +102,12 @@ class Trajectory:
         if action is not None:
             one_hot[action] = 1.
         action = one_hot
-        observation = torch.tensor(observation, dtype=torch.float32)
 
         if reward is not None:
             reward = torch.tensor([reward], dtype=torch.float)
         else:
             reward = torch.tensor([0.], dtype=torch.float)
+        observation = torch.from_numpy(observation)
 
         self.observed.append(torch.cat((action, observation, reward)))
 
@@ -163,6 +188,7 @@ class Trajectory:
 
         return transitions
 
+
 class ReplayBuffer:
     """
     Replay Buffer storing transitions.
@@ -177,10 +203,6 @@ class ReplayBuffer:
         self.buffer = []
         self.last = 0
         self.count = 0
-    
-    @property
-    def ready(self):
-        return self.count >= 1
 
     @property
     def is_full(self):
@@ -230,66 +252,147 @@ class ReplayBuffer:
         """
         return choices(self.buffer, k=number)
 
-class DRQNAgent(nn.Module):
-    """Deep Recurrent Q-Network reinforcement learning agent."""
-    def __init__(self, action_size, observation_size, hidden_size=256, num_layers=1, device='cpu'):
+
+class DRQN(nn.Module):
+    """
+    Deep Recurrent Q-Network reinforcement learning agent.
+
+    Arguments:
+    - cell: str
+        The name of the recurrent cell.
+    - action_size: int
+        The number of discrete actions in the environment.
+    - observation_size: int
+        The dimension of the observation in the environment.
+    - **network_kwargs: dict
+        Additional arguments for the recurrent cell.
+    """
+
+    def __init__(self, action_size, observation_size, num_layers, hidden_size,  device='cuda',):
         super().__init__()
         self.action_size = action_size
         self.observation_size = observation_size
         self.device = device
 
         # Initialize Q network and target Q network
-        self.Q = RNN(observation_size + action_size, action_size, hidden_size, num_layers).to(device)
-        self.Q_tar = RNN(observation_size + action_size, action_size, hidden_size, num_layers).to(device)
+        input_size = action_size + observation_size
+        self.Q = GRU(
+            input_size=input_size,
+            output_size=action_size,
+            num_layers=num_layers,
+            hidden_size=hidden_size
+        )
+        self.Q_tar = GRU(
+            input_size=input_size,
+            output_size=action_size,
+            num_layers=num_layers,
+            hidden_size=hidden_size
+        )
 
-        # Add default hidden shape
-        self.hidden_shape = (num_layers, 1, hidden_size)
-
-    def policy(self, observations, state=None, epsilon=0.0):
-        """Returns actions and new states for a batch of observations.
-        
-        Args:
-            observations: Current observations
-            state: Tuple of (previous_action, hidden_state). If None, initializes new state.
-            epsilon: Exploration parameter
+    def eval_rollout(self, environment, num_rollouts):
         """
-        batch_size = observations.shape[0] if isinstance(observations, torch.Tensor) else len(observations)
-        
-        # Convert observations to tensor if needed
-        if not isinstance(observations, torch.Tensor):
-            observations = torch.tensor(observations, dtype=torch.float32).to(self.device)
-        
-        # Initialize or unpack state
-        if state is None:
-            prev_actions = torch.zeros(batch_size, self.action_size).to(self.device)
-            hidden = torch.zeros(self.hidden_shape[0], batch_size, self.hidden_shape[2]).to(self.device)
-        else:
-            prev_actions, hidden = state
+        Evaluates the (discounted) cumulative return over a certain number of
+        rollouts.
 
-        # Combine observation with previous action
-        network_input = torch.cat([prev_actions, observations], dim=-1).unsqueeze(1)
+        Arguments:
+        - environment: Environment
+            The environment on which the agent is evaluated.
+        - num_rollouts: int
+            The number of episodes over which the returns are averaged.
 
-        with torch.no_grad():
-            q_values, new_hidden = self.Q(network_input, hidden)
+        Returns:
+        - mean_return: float
+            The average empirical cumulative return
+        - mean_disc_return: float
+            The average empirical discounted cumulative return
+        """
+        sum_returns, disc_returns = 0.0, 0.0
 
-        # Handle epsilon-greedy exploration
-        if random() < epsilon:
-            actions = np.random.randint(0, self.action_size, size=batch_size)
-        else:
-            actions = q_values.squeeze(1).argmax(dim=1).cpu().numpy()
+        for _ in range(num_rollouts):
 
-        # Prepare next state (convert actions to one-hot for next state)
-        next_actions = torch.zeros(batch_size, self.action_size).to(self.device)
-        next_actions[range(batch_size), actions] = 1
+            trajectory, = self.play(environment, epsilon=0.0)
 
-        return actions, (next_actions, new_hidden)
+            sum_returns += trajectory.get_cumulative_reward()
+            disc_returns += trajectory.get_cumulative_reward(gamma=0.99)
 
-    def init_state(self, batch_size=1):
-        """Initialize agent state with batch size."""
-        prev_actions = torch.zeros(batch_size, self.action_size).to(self.device)
-        hidden = torch.zeros(self.hidden_shape[0], batch_size, self.hidden_shape[2]).to(self.device)
-        return (prev_actions, hidden)
-    
+        mean_return = sum_returns / num_rollouts
+        mean_disc_return = disc_returns / num_rollouts
+
+        return mean_return, mean_disc_return
+
+    def play(
+        self,
+        environment,
+        epsilon,
+        return_hiddens=False,
+        return_beliefs=False,
+    ):
+        """
+        Plays a trajectory in the environment with the current policy of
+        the agent and some noise.
+
+        Arguments:
+        - environment: Environment
+            The environment on which to play.
+        - epsilon: float
+            The exploration rate at each time step.
+        - return_hiddens: bool
+            Whether to return the hidden states along with the trajectory.
+        - return_beliefs: bool
+            Whether to return the beliefs along with the trajectory.
+
+        Returns:
+        - trajectory: Trajectory
+            The trajectory resulting from the interaction with the environment.
+        - hiddens: list
+            The list of flattened hidden states at each time step of the trajectory.
+        - beliefs: list
+            The list of beliefs at each time step of the trajectory.
+        """
+        hiddens, beliefs = [], []
+
+        o, _ = environment.reset()
+        trajectory = Trajectory(
+            environment.action_size,
+            environment.observation_size,
+        )
+
+        trajectory.add(None, None, o)
+
+        hidden_states = None
+        terminated = False
+        truncated = False
+        while not (terminated or truncated):
+
+            tau_t = trajectory.get_last_observed().view(1, 1, -1).to(self.device)
+            with torch.no_grad():
+                values, hidden_states = self.Q(tau_t, hidden_states)
+
+            if return_hiddens:
+                hiddens.append(hidden_states[0].detach().cpu().flatten().clone())
+
+            if return_beliefs:
+                beliefs.append(environment.get_belief())
+
+            if random() < epsilon:
+                a = environment.action_space.sample()
+            else:
+                a = values.flatten().argmax().item()
+
+            o, r, terminated, truncated, _ = environment.step(a)
+
+            trajectory.add(a, r, o, terminal=terminated)
+
+
+        return_values = (trajectory,)
+
+        if return_hiddens:
+            return_values += (hiddens,)
+        if return_beliefs:
+            return_values += (beliefs,)
+
+        return return_values
+
     def _targets(self, transitions, gamma):
         """
         Computes from a set of transitions, a list of inputs sequences,
@@ -315,7 +418,7 @@ class DRQNAgent(nn.Module):
         # TODO: no loop but use padding
         for seq_bef, a, r, o, d, seq_aft in transitions:
 
-            target = torch.tensor(r).to(self.device)
+            target = torch.tensor(r, device=self.device)
 
             if not d:
                 with torch.no_grad():
@@ -325,11 +428,10 @@ class DRQNAgent(nn.Module):
 
             target = target.view(1, -1)
             mask = torch.zeros(seq_bef.size(0), self.action_size,
-                               dtype=torch.bool)
+                             dtype=torch.bool, device=self.device)
             mask[-1, a] = True
 
-            seq_bef = seq_bef.to(self.device)
-            inputs.append(seq_bef)
+            inputs.append(seq_bef.to(self.device))
             targets.append(target)
             masks.append(mask)
 
@@ -360,16 +462,215 @@ class DRQNAgent(nn.Module):
 
         return F.mse_loss(outputs.transpose(0, 1)[masks.transpose(0, 1)],
                           targets.transpose(0, 1).flatten())
+
+    def train_rollout(
+        self,
+        environment,
+        num_episodes,
+        batch_size,
+        learning_rate,
+        num_gradient_steps,
+        target_period,
+        eval_period,
+        num_rollouts,
+        epsilon,
+        buffer_capacity,
+        fill_buffer=False,
+    ):
+        """
+        Trains the reinforcement learning agent on the specified environment
+
+        Arguments:
+        - environment: Environment
+            The environment on which to train the agent.
+        - logger: function
+            The function to call for logging the training statistics.
+        - num_episodes: int
+            The number of episodes to generate
+        - batch_size: int
+            The number of transitions in each minibatch
+        - learning_rate: float
+            The learning rate used in the Adam optimizer
+        - num_gradient_steps: int
+            The number of gradients steps made at each episode
+        - target_period: int
+            The period at which the target is updated in number of episodes
+        - eval_period: the period at which the network is evaluated in number
+            of episodes
+        - num_rollouts: int
+            The number of episodes for the evaluation
+        - epsilon: float
+            The exploration rate
+        """
+        optim = torch.optim.Adam(self.Q.parameters(), lr=learning_rate)
+        num_transitions = 0
+
+        # Initialise replay buffer
+        buffer = ReplayBuffer(buffer_capacity)
+
+        # Eventually fill replay buffer
+        if fill_buffer:
+            while not buffer.is_full:
+                trajectory, = self.play(environment, epsilon=1.0)
+                buffer.add(trajectory)
+                
+
+        for episode in range(num_episodes):
+
+            # Evaluate and save weights
+            if episode % eval_period == 0:
+                mean_return, mean_disc_return = self.eval(
+                    environment,
+                    num_rollouts,
+                )
+
+                print(f'Episode {episode:04d}')
+                print(
+                    {'return': mean_return, 'disc_return': mean_disc_return}
+                )
+
+                print(
+                    {
+                        'train/episode': episode,
+                        'train/return': mean_return,
+                        'train/disc_return': mean_disc_return,
+                        'train/num_transitions': num_transitions,
+                    }
+                )
+
+
+            # Update target
+            if episode % target_period == 0:
+                self.Q_tar.load_state_dict(self.Q.state_dict())
+
+            # Generate trajectory
+            trajectory, = self.play(environment, epsilon=epsilon)
+            buffer.add(trajectory)
+            num_transitions += trajectory.num_transitions
+
+            # Optimize Q-network
+            for _ in range(num_gradient_steps):
+
+                transitions = buffer.sample(batch_size)
+
+                inputs, targets, masks = self._targets(
+                    transitions,
+                    gamma=0.99,
+                )
+                loss = self._loss(inputs, targets, masks)
+
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
+
+        # Log and save last results
+        mean_return, mean_disc_return = self.eval(environment, num_rollouts)
+
+        print('Final evaluation')
+        print({'return': mean_return, 'disc_return': mean_disc_return})
+
+        print({'train/episode': episode,
+                'train/return': mean_return,
+                'train/disc_return': mean_disc_return,
+                'train/num_transitions': num_transitions})
+
+
+
+
+def train_drqn_agent(env, agent: DRQN, config, logger, ckpt_path):
+    
+    buffer = ReplayBuffer(config.train.buffer_capacity)
+
+    optim = torch.optim.Adam(
+        list(agent.Q.parameters()), 
+        lr=config.train.learning_rate
+    )
+    agg = embodied.Agg()
+    epstats = embodied.Agg()
+    episode = embodied.Agg()
+
+    should_log = embodied.when.Every(config.train.log_every)
+    should_train = embodied.when.Every(config.train.train_every)
+    should_save = embodied.when.Every(config.train.save_every)
+    should_update_target = embodied.when.Every(config.train.target_period)
+    max_steps = config.train.steps
+    
+    should_save(logger.step) # So we don't save 0th checkpoint
+    while logger.step.value < max_steps:
+        
+        o, _ = env.reset()
+        trajectory = Trajectory(env.action_space.n, env.observation_space.shape[0])
+        trajectory.add(None, None, o)
+        hidden_states = None
+        terminated = False
+        truncated = False
+        while not (terminated or truncated):
+            frame  = env.render()
+            episode.add("policy_log_image", frame, agg="stack")
+            tau_t = trajectory.get_last_observed().view(1, 1, -1).to(agent.device)
+            with torch.no_grad():
+                values, hidden_states = agent.Q(tau_t, hidden_states)
+
+            if random() < config.train.epsilon:
+                a = env.action_space.sample()
+            else:
+                a = values.flatten().argmax().item()
+            o, r, terminated, truncated, _ = env.step(a)
+            logger.step.increment()
+            trajectory.add(a, r, o, terminal=terminated)
+            buffer_ready = buffer.count > 0
+            if buffer_ready and should_train(logger.step):
+                for _ in range(config.train.num_gradient_steps):
+                    transitions = buffer.sample(config.train.batch_size)
+                    inputs, targets, masks = agent._targets(
+                        transitions,
+                        config.train.gamma,
+                    )
+                    loss = agent._loss(inputs, targets, masks)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
+                    logger.add({'train/loss': loss.item()})
+            if buffer_ready and should_update_target(logger.step):
+                agent.Q_tar.load_state_dict(agent.Q.state_dict())
             
-    def init_hidden(self, batch_size):
-        return torch.zeros(self.hidden_shape[0], batch_size, self.hidden_shape[2]).to(self.device)
+            if should_save(logger.step):
+                checkpoint = {
+                    'agent': agent.state_dict(),
+                    'optimizer': optim.state_dict(),
+                    'step': logger.step.value,
+                    'config': config
+                }
+                checkpoint_path = ckpt_path / f'checkpoint_{logger.step.value}.ckpt'
+                torch.save(checkpoint, checkpoint_path)
+                torch.save(checkpoint, "checkpoint.ckpt")
+            
+            if should_log(logger.step):
+                logger.add(epstats.result(), prefix='epstats')
+                logger.add(agg.result(), prefix='agg')
+                logger.write()
+
+            
+        score = trajectory.get_cumulative_reward(gamma=config.train.gamma)
+        length = trajectory.num_transitions
+
+        result = episode.result()
+        logger.add({
+            'score': score,
+            'length': length,
+        }, prefix='episode')
+        
+        epstats.add(result)
+        episode.reset()
+        buffer.add(trajectory)
+    env.close()
 
 def make_logger(logdir: embodied.Path, config):
     loggers = [
         embodied_logger.TerminalOutput(),
         embodied_logger.JSONLOutput(logdir, "metrics.jsonl"),
         embodied_logger.TensorBoardOutput(logdir),
-        VideoOutput(logdir, fps=20),
+        VideoOutput(logdir, fps=8),
         embodied_logger.WandBOutput(
             wandb_init_kwargs=dict(
                 project=config.wandb.project,
@@ -382,241 +683,18 @@ def make_logger(logdir: embodied.Path, config):
     ]
     loggers = [x for x in loggers if x is not None]
     return embodied_logger.Logger(embodied.Counter(), loggers)
-
-def build_vec_env(env_name, env_kwargs, seed, num_envs=4):
-    def make_env(idx):
-        def _init():
-            env = gymnasium.make(env_name, render_mode="rgb_array", **env_kwargs)
-            env = gymnasium.wrappers.TransformObservation(
-                env, 
-                lambda obs: obs['vector'], 
-                observation_space=env.observation_space.spaces['vector']
-            )
-            env.reset(seed=seed + idx)
-            return env
-        return _init
-    
-    return AsyncVectorEnv([make_env(i) for i in range(num_envs)], worker=_async_worker)
-
-def train_drqn_agent(env_name, env_kwargs, agent, config, logger, ckpt_path):
-    num_envs = 1
-    env = build_vec_env(env_name, env_kwargs, seed=config.seed, num_envs=num_envs)
-    buffer = ReplayBuffer(config.train.buffer_capacity)
-    
-    optim = torch.optim.Adam(
-        list(agent.Q.parameters()), 
-        lr=config.train.learning_rate
+def build_env(env_name, env_kwargs, seed):
+    env = gymnasium.make(env_name, render_mode="rgb_array", **env_kwargs)
+    env = gymnasium.wrappers.TransformObservation(
+        env, 
+        lambda obs: obs['vector'], 
+        observation_space=env.observation_space.spaces['vector']
     )
-    
-    num_transitions = 0
-    agg = embodied.Agg()
-    epstats = embodied.Agg()
-    episodes = defaultdict(embodied.Agg)
-    
-    should_log = embodied.when.Every(config.train.log_every)
-    should_train = embodied.when.Every(config.train.train_every)
-    should_save = embodied.when.Every(config.train.save_every)
-    should_update_target = embodied.when.Every(config.train.target_period)
-    max_steps = config.train.steps
-
-    # Initialize environment and trajectories
-    current_obs, _ = env.reset()  # Shape: (num_envs, obs_dim)
-    trajectories = [
-        Trajectory(env.single_action_space.n, env.single_observation_space.shape[0]) 
-        for _ in range(num_envs)
-    ]
-    for i in range(num_envs):
-        trajectories[i].add(None, None, current_obs[i])
-   
-    agent_states = agent.init_state(num_envs)  # Now returns (prev_actions, hidden)
-    should_save(logger.step) # So we don't save 0th checkpoint
-    
-    for _ in tqdm(range(max_steps)):
-        logger.step.increment()
-        frames = env.render()  # Shape: (num_envs, H, W, C)
-        episodes[0].add("policy_log_image", frames[0], agg="stack")  # Only log first env
-
-        # Environment interaction
-        with torch.no_grad():
-            obs_batch = torch.tensor(current_obs, dtype=torch.float32).to(agent.device)
-            actions, agent_states = agent.policy(obs_batch, agent_states, epsilon=config.train.epsilon)
-            
-        o_next, rewards, terminated, truncated, info = env.step(actions)
-        
-        # Update trajectories
-        for i in range(num_envs):
-            trajectories[i].add(actions[i], rewards[i], o_next[i], terminal=terminated[i])
-
-        current_obs = o_next
-        # Handle completed episodes
-        for i in range(num_envs):
-            if terminated[i] or truncated[i]:
-                # Add trajectory to buffer and log stats
-                score = trajectories[i].get_cumulative_reward(gamma=config.train.gamma)
-                length = trajectories[i].num_transitions
-
-                result = episodes[i].result()
-                logger.add({
-                    'score': score,
-                    'length': length,
-                }, prefix='episode')
-                
-                epstats.add(result)
-                episodes[i].reset()
-
-                buffer.add(trajectories[i])
-                num_transitions += trajectories[i].num_transitions
-                current_obs[i] = info['new_obs'][i]
-                # Reset trajectory and state for this environment
-                trajectories[i] = Trajectory(env.single_action_space.n, env.single_observation_space.shape[0])
-                trajectories[i].add(None, None, current_obs[i])
-                
-                # Reset both previous action and hidden state for this environment
-                agent_states[0][i].zero_()  # Reset previous action
-                agent_states[1][:, i].zero_()  # Reset hidden state
-                # when we make vecenv with more than 1 env, we have to fix this
-                # vecenv resets with a dummy action after a terminal step
-                # this messes up batching of actions from agent policy
-                
-        # Training step every N environment steps
-        if buffer.ready and should_train(logger.step):
-            for _ in range(config.train.num_gradient_steps):
-                transitions = buffer.sample(config.train.batch_size)
-                inputs, targets, masks = agent._targets(
-                    transitions,
-                    config.train.gamma,
-                )
-                loss = agent._loss(inputs, targets, masks)
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-
-                logger.add({'train/loss': loss.item()})
-        
-        if should_update_target(logger.step):
-            agent.Q_tar.load_state_dict(agent.Q.state_dict())
-
-
-        if should_save(logger.step):
-            checkpoint = {
-                'agent': agent.state_dict(),
-                'optimizer': optim.state_dict(),
-                'step': logger.step.value,
-                'config': config
-            }
-            checkpoint_path = ckpt_path / f'checkpoint_{logger.step.value}.ckpt'
-            torch.save(checkpoint, checkpoint_path)
-            torch.save(checkpoint, "checkpoint.ckpt")
-
-        if should_log(logger.step):
-            logger.add(epstats.result(), prefix='epstats')
-            logger.add(agg.result(), prefix='agg')
-            logger.write()
-
-
-    env.close()
-
-
-
-def _async_worker(
-    index: int,
-    env_fn: callable,
-    pipe: Connection,
-    parent_pipe: Connection,
-    shared_memory: dict[str, Any] | tuple[Any, ...],
-    error_queue: Queue,
-):
-    env = env_fn()
-    observation_space = env.observation_space
-    action_space = env.action_space
-
-    parent_pipe.close()
-
-    try:
-        while True:
-            command, data = pipe.recv()
-
-            if command == "reset":
-                observation, info = env.reset(**data)
-                if shared_memory:
-                    write_to_shared_memory(
-                        observation_space, index, observation, shared_memory
-                    )
-                    observation = None
-                pipe.send(((observation, info), True))
-            elif command == "step":
-
-                (
-                    observation,
-                    reward,
-                    terminated,
-                    truncated,
-                    info,
-                ) = env.step(data)
-                if terminated or truncated:
-                    next_obs, next_info = env.reset()
-                    info['new_obs'] = next_obs
-                    info['new_info'] = next_info
-
-                if shared_memory:
-                    write_to_shared_memory(
-                        observation_space, index, observation, shared_memory
-                    )
-                    observation = None
-
-                pipe.send(((observation, reward, terminated, truncated, info), True))
-            elif command == "close":
-                pipe.send((None, True))
-                break
-            elif command == "_call":
-                name, args, kwargs = data
-                if name in ["reset", "step", "close", "_setattr", "_check_spaces"]:
-                    raise ValueError(
-                        f"Trying to call function `{name}` with `call`, use `{name}` directly instead."
-                    )
-
-                attr = env.get_wrapper_attr(name)
-                if callable(attr):
-                    pipe.send((attr(*args, **kwargs), True))
-                else:
-                    pipe.send((attr, True))
-            elif command == "_setattr":
-                name, value = data
-                env.set_wrapper_attr(name, value)
-                pipe.send((None, True))
-            elif command == "_check_spaces":
-                obs_mode, single_obs_space, single_action_space = data
-
-                pipe.send(
-                    (
-                        (
-                            (
-                                single_obs_space == observation_space
-                                if obs_mode == "same"
-                                else is_space_dtype_shape_equiv(
-                                    single_obs_space, observation_space
-                                )
-                            ),
-                            single_action_space == action_space,
-                        ),
-                        True,
-                    )
-                )
-            else:
-                raise RuntimeError(
-                    f"Received unknown command `{command}`. Must be one of [`reset`, `step`, `close`, `_call`, `_setattr`, `_check_spaces`]."
-                )
-    except (KeyboardInterrupt, Exception):
-        error_type, error_message, _ = sys.exc_info()
-        trace = traceback.format_exc()
-
-        error_queue.put((index, error_type, error_message, trace))
-        pipe.send((None, False))
-    finally:
-        env.close()
-
+    env.reset(seed=seed)
+    return env
 
 def main(argv=None):
+    
     # Load configs
     configs = yaml.safe_load((embodied.Path(__file__).parent / "drqn_configs.yaml").read())
     parsed, other = embodied.Flags(configs=["defaults"]).parse_known(argv)
@@ -627,7 +705,7 @@ def main(argv=None):
     config = config.update(
         logdir=config.logdir.format(timestamp=embodied.timestamp()),
     )
-
+    
     # Create logdir
     logdir = embodied.Path(config.logdir)
     logdir.mkdir()
@@ -643,36 +721,32 @@ def main(argv=None):
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
-    # Create logger
-    logger = make_logger(logdir=logdir, config=config)
+        
+    if (logdir / "config.yaml").exists():
+        config = embodied.Config.load(logdir / "config.yaml")
+        print("Loaded config from", logdir / "config.yaml")
+    else:
+        config.save(logdir / "config.yaml")
+        print("Saved config to", logdir / "config.yaml")
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    env_kwargs = yaml.YAML(typ="safe").load(config.env.kwargs) or {}
+    env = build_env(config.env.name, env_kwargs, config.seed)
+    
+    action_size = env.action_space.n
+    observation_size = env.observation_space.shape[0]
 
-    # Create environment to get dimensions
-    vec_env = build_vec_env(config.env.name, 
-                            yaml.YAML(typ="safe").load(config.env.kwargs) or {}, 
-                            config.seed, 
-                            config.train.num_envs)
-    action_size = vec_env.action_space[0].n
-    observation_size = vec_env.observation_space.shape[1]
-    vec_env.close()
-
-    # Create agent
-    agent = DRQNAgent(
+    agent = DRQN(
         action_size=action_size,
         observation_size=observation_size,
-        hidden_size=config.drqn.hidden_size,
+        device=device,
         num_layers=config.drqn.num_layers,
-        device=config.device,
+        hidden_size=config.drqn.hidden_size
     )
-
-    # Train agent
-    train_drqn_agent(
-        env_name=config.env.name,
-        env_kwargs=yaml.YAML(typ='safe').load(config.env.kwargs),
-        agent=agent,
-        config=config,
-        logger=logger,
-        ckpt_path=logdir
-    )
+    agent.to(device)
+    logger = make_logger(logdir, config)
+    train_drqn_agent(env, agent, config, logger, logdir)
 
 if __name__ == "__main__":
     main()

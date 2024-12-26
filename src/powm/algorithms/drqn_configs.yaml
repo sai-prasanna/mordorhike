@@ -7,7 +7,7 @@ defaults:
   train:
     steps: 500000  # Total number of training steps
     log_every: 10000  # Log metrics every N steps
-    learning_rate: 1e-4 # Learning rate for Adam optimizer
+    learning_rate: 1e-3 # Learning rate for Adam optimizer
     batch_size: 32        # Batch size for training
     buffer_capacity: 500000 # Maximum number of trajectories in replay buffer
     train_every: 81       # Train after every N environment steps
@@ -16,7 +16,6 @@ defaults:
     save_every: 50000   # Save checkpoint every N steps
     epsilon: 0.2         # Exploration rate
     gamma: 0.99          # Discount factor
-    num_envs: 1
 
   # Environment configurations
   env:

@@ -5,7 +5,7 @@ import ruamel.yaml as yaml
 import torch
 from tqdm import tqdm
 
-from powm.algorithms.train_drqn import DRQNAgent, build_vec_env, make_logger
+from powm.algorithms.train_drqn import DRQN, Trajectory, build_env
 
 
 def collect_rollouts(agent, config, num_episodes):
@@ -14,65 +14,51 @@ def collect_rollouts(agent, config, num_episodes):
     # Create vectorized environment
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
     env_kwargs["estimate_belief"] = True
-    vec_env = build_vec_env(config.env.name, env_kwargs, config.seed, num_envs=config.train.num_envs)
-
-    current_obs, infos  = vec_env.reset()
-    agent_state = agent.init_state(batch_size=len(current_obs))
-    
+    env = build_env(config.env.name, env_kwargs, config.seed)
     rolled_out_episodes = 0
-    episodes = defaultdict(lambda: defaultdict(list))
+    
     while rolled_out_episodes < num_episodes:
-        with torch.no_grad():
-            obs_tensor = torch.tensor(current_obs, dtype=torch.float32).to(agent.device)
-            action, agent_state = agent.policy(obs_tensor, agent_state, epsilon=0.0)
+        episode = defaultdict(list)
+        o, infos  = env.reset()
+        trajectory = Trajectory(env.action_space.n, env.observation_space.shape[0])
+        trajectory.add(None, None, o)
+
+
+        hidden_states = None
+        terminated = False
+        truncated = False
         
-        for i in range(len(current_obs)):
-            episodes[i]["state"].append(infos["state"][i])
-            episodes[i]["belief"].append(infos["belief"][i])
+        while not (terminated or truncated):
+            tau_t = trajectory.get_last_observed().view(1, 1, -1).to(agent.device)
+            with torch.no_grad():
+                values, hidden_states = agent.Q(tau_t, hidden_states)
+                a = values.flatten().argmax().item()
 
-
-        next_obs, reward, terminated, truncated, infos = vec_env.step(action)
-        
-        for i in range(len(current_obs)):
-            episodes[i]["obs"].append(current_obs[i])
-            episodes[i]["action"].append(action[i])
-            episodes[i]["reward"].append(reward[i])
+            latent = hidden_states[0][:, 0].cpu().numpy().reshape(1, 1, -1)
             
-            latent = agent_state[1][:, i].cpu().numpy()
-            # add particle dim and collapse the 
-            # gru layer dim into single final dim
-            latent = latent.reshape(latent.shape[0], 1, -1)
-            episodes[i]["latent"].append(latent)
             
-            done = terminated[i] or truncated[i]
-            if done and rolled_out_episodes < num_episodes:
-                episodes[i]["state"] = np.array(episodes[i]["state"])
-                episodes[i]["obs"] = np.array(episodes[i]["obs"])
-                episodes[i]["action"] = np.array(episodes[i]["action"])
-                episodes[i]["reward"] = np.array(episodes[i]["reward"])
-                episodes[i]["latent"] = np.array(episodes[i]["latent"])
-                episodes[i]["belief"] = np.array(episodes[i]["belief"])
-                episodes[i]["success"] = np.array(terminated[i])
-                
+            episode["state"].append(infos["state"])
+            episode["belief"].append(infos["belief"])
+            episode["latent"].append(latent)
+            episode["obs"].append(o)
+            
+            o, r, terminated, truncated, infos = env.step(a)
+            trajectory.add(a, r, o, terminal=terminated)
+            episode["action"].append(a)
+            episode["reward"].append(r)
 
-                episode_data.append(episodes[i])
-                prev_actions, prev_hiddens = agent_state
+            if terminated or truncated:
+                episode["state"] = np.array(episode["state"])
+                episode["obs"] = np.array(episode["obs"])
+                episode["action"] = np.array(episode["action"])
+                episode["reward"] = np.array(episode["reward"])
+                episode["latent"] = np.array(episode["latent"])
+                episode["belief"] = np.array(episode["belief"])
+                episode["success"] = np.array(terminated)
                 
-                worker_state = agent.init_state(batch_size=1)
-                prev_actions[i] = worker_state[0][0]
-                # for hidden state it's layers x batch size x hidden size
-                # so we need to index the batch in the second dimension
-                prev_hiddens[:, i] = worker_state[1][:, 0]
-                agent_state = (prev_actions, prev_hiddens)
-
-                episodes[i] = defaultdict(list)
+                episode_data.append(episode)
                 rolled_out_episodes += 1
-                current_obs[i]  = infos['new_obs'][i]
-                infos['belief'][i] = infos['new_info']['belief'][i]
-                infos['state'][i] = infos['new_info']['state'][i]
-            else:
-                current_obs[i] = next_obs[i]
-    vec_env.close()
+    env.close()
     return episode_data
 
 def main(argv=None):
@@ -93,19 +79,17 @@ def main(argv=None):
     np.random.seed(config.seed)
 
     # Create agent
-    vec_env = build_vec_env(config.env.name, yaml.YAML(typ="safe").load(config.env.kwargs) or {}, config.seed)
-    action_size = vec_env.action_space[0].n
-    observation_size = vec_env.observation_space.shape[1]
-    vec_env.close()
+    env = build_env(config.env.name, yaml.YAML(typ="safe").load(config.env.kwargs) or {}, config.seed)
+    action_size = env.action_space.n
+    observation_size = env.observation_space.shape[0]
 
-    agent = DRQNAgent(
+    agent = DRQN(
         action_size=action_size,
         observation_size=observation_size,
         hidden_size=config.drqn.hidden_size,
         num_layers=config.drqn.num_layers,
-        device=config.device,
     )
-
+    agent.to(config.device)
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
