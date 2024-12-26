@@ -21,7 +21,7 @@ seeds=(42 1337 13)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
-#uv run train-r2i --logdir $logdir --configs mordorhike --seed $seed --task "gymnasium_mordor-hike-easy-v0"
+uv run train-r2i --logdir $logdir --configs mordorhike --seed $seed --task "gymnasium_mordor-hike-easy-v0"
 uv run rollout-r2i --logdir $logdir
 uv run analyze --logdir $logdir
 end=`date +%s`

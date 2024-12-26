@@ -21,6 +21,8 @@ seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
 uv run train-storm --logdir $logdir --seed $seed --env.name "mordor-hike-easy-v0"
+uv run rollout-storm --logdir $logdir
+uv run analyze --logdir $logdir
 end=`date +%s`
 echo "Finished at $(date)";
 echo "Time taken: $((end-start)) seconds";
