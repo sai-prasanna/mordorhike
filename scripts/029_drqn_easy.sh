@@ -21,8 +21,8 @@ seeds=(42 1337 13)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
-# uv run train-drqn --logdir $logdir --configs defaults --seed $seed --env.name "mordor-hike-easy-v0"
-# uv run rollout-drqn --logdir $logdir
+uv run train-drqn --logdir $logdir --configs defaults --seed $seed --env.name "mordor-hike-easy-v0"
+uv run rollout-drqn --logdir $logdir
 uv run analyze --logdir $logdir
 end=`date +%s`
 echo "Finished at $(date)";

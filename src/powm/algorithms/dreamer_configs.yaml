@@ -160,9 +160,9 @@ size30k: &size30k
   .*\.layers: 2
 
 sizesmol: &sizesmol
-  dyn.rssm: {deter: 64, hidden: 32, stoch: 16, classes: 8}
+  dyn.rssm: {deter: 256, hidden: 64, stoch: 16, classes: 8}
   .*\.depth: 8
-  .*\.units: 128
+  .*\.units: 64
 
 size2m: &size2m
   dyn.rssm: {deter: 1024, hidden: 128, classes: 8}
