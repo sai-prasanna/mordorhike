@@ -288,6 +288,8 @@ class DRQN(nn.Module):
             num_layers=num_layers,
             hidden_size=hidden_size
         )
+        for param in self.Q_tar.parameters():
+            param.requires_grad = False
 
     def eval_rollout(self, environment, num_rollouts):
         """
@@ -745,6 +747,9 @@ def main(argv=None):
         hidden_size=config.drqn.hidden_size
     )
     agent.to(device)
+    
+    # print number of trainable parameters
+    print(f"Number of trainable parameters: {sum(p.numel() for p in agent.parameters() if p.requires_grad)}")
     logger = make_logger(logdir, config)
     train_drqn_agent(env, agent, config, logger, logdir)
 

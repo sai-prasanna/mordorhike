@@ -153,6 +153,12 @@ defaults:
   slowreg: 1.0
   slowtar: False
 
+size30k: &size30k
+  dyn.rssm: {deter: 16, hidden: 32, stoch: 4, classes: 4}
+  .*\.depth: 16
+  .*\.units: 32
+  .*\.layers: 2
+
 sizesmol: &sizesmol
   dyn.rssm: {deter: 64, hidden: 32, stoch: 16, classes: 8}
   .*\.depth: 8
