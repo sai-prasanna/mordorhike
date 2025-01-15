@@ -174,11 +174,12 @@ def main(argv=None):
     agent = build_agent(config, action_dim).eval()
     
     # Load checkpoints
-    ckpt_paths = sorted([f for f in logdir.glob("world_model_*.pth")])
+    ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
-        world_model.load_state_dict(torch.load(str(ckpt_path)))
-        agent.load_state_dict(torch.load(str(logdir / f"agent_{step}.pth")))
+        checkpoint = torch.load(str(ckpt_path))
+        world_model.load_state_dict(checkpoint["world_model"])
+        agent.load_state_dict(checkpoint["agent"])
         # Collect rollouts
         with torch.no_grad():
             episodes = collect_rollouts(

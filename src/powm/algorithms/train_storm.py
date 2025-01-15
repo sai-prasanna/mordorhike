@@ -119,6 +119,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
     should_log = embodied.when.Every(log_every)
     should_save = embodied.when.Every(save_every)
     should_train_agent = embodied.when.Every(train_agent_every_steps)
+    should_train_world_model = embodied.when.Every(train_dynamics_every_steps)
 
 
     for total_steps in tqdm(range(max_steps//num_envs)):
@@ -178,9 +179,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
             logger.add(agg.result(), prefix='agg')
             logger.write()
 
-        # train world model part >>>
-        is_should_save = should_save(logger.step)
-        if replay_buffer.ready() and is_should_save:
+        if replay_buffer.ready() and should_train_world_model(logger.step):
             train_world_model_step(
                 replay_buffer=replay_buffer,
                 world_model=world_model,
@@ -189,9 +188,7 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
                 batch_length=batch_length,
                 logger=logger
             )
-        # <<< train world model part
 
-        # train agent part >>>
         if replay_buffer.ready() and should_train_agent(logger.step):
             if env_name.startswith("ALE/"):
                 log_video = True
@@ -219,6 +216,15 @@ def train_world_model_agent(env_name, env_kwargs, max_steps, num_envs,
                 termination=imagine_termination,
             )
             logger.add(metrics, prefix="train")
+        
+        if should_save(logger.step):
+            print(colorama.Fore.GREEN + f"Saving model at total steps {logger.step}" + colorama.Style.RESET_ALL)
+            torch.save({
+                "world_model": world_model.state_dict(),
+                "agent": agent.state_dict(),
+                "step": logger.step.value,
+            }, ckpt_path/f"checkpoint_{logger.step.value}.ckpt")
+
 
 
 def build_world_model(conf, action_dim):
