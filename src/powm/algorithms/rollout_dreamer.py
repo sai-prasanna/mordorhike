@@ -1,13 +1,12 @@
 import random
+import re
 from collections import defaultdict
 from functools import partial as bind
-import re
 
 import dreamerv3
 import numpy as np
 import torch
-from dreamerv3 import embodied
-from dreamerv3 import jaxutils
+from dreamerv3 import embodied, jaxutils
 
 from powm.algorithms.train_dreamer import make_env, make_logger
 
@@ -115,7 +114,6 @@ def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes):
 def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
-        policy_mode="train",
         collect_n_episodes=110,
     ).parse_known(argv)
     assert parsed.logdir, "Logdir is required"

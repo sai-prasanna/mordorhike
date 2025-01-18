@@ -1,14 +1,18 @@
+import copy
+from pathlib import Path
+
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from scipy.stats import pearsonr
-import cv2
-from pathlib import Path
 from dreamerv3 import embodied
-from powm.envs.mordor import MordorHike
+from scipy.stats import pearsonr
+from torch.utils.data import DataLoader, TensorDataset
+
 from powm.algorithms.train_dreamer import make_logger
+from powm.envs.mordor import MordorHike
+
 
 class BeliefPredictor(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -35,7 +39,7 @@ def preprocess_episodes(episodes, env):
         episode["discrete_belief"] = np.array(episode["discrete_belief"])
     return np.array(X), np.array(Y)
 
-def train_belief_predictor(train_X, train_Y, val_X, val_Y, belief_shape, device):
+def train_belief_predictor(train_X, train_Y, val_X, val_Y, device):
     """Train belief predictor and return best model"""
     model = BeliefPredictor(train_X.shape[1], train_Y.shape[1]).to(device)
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
@@ -64,7 +68,7 @@ def train_belief_predictor(train_X, train_Y, val_X, val_Y, belief_shape, device)
             
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model = model.state_dict().copy()
+            best_model = copy.deepcopy(model.state_dict())
             
     model.load_state_dict(best_model)
     return model
@@ -245,12 +249,10 @@ def main(argv=None):
         train_X, train_Y = preprocess_episodes(train_episodes, env)
         val_X, val_Y = preprocess_episodes(val_episodes, env)
         test_X, test_Y = preprocess_episodes(test_episodes, env)
-        belief_shape = test_episodes[0]["discrete_belief"][0].shape
         # Train predictor
         model = train_belief_predictor(
             train_X, train_Y, 
             val_X, val_Y,
-            belief_shape,
             device
         )
 
@@ -296,12 +298,10 @@ def main(argv=None):
         })
         logger.add(overall_metrics)
         
-        video_dir = logdir / parsed.metric_dir / f"videos_{ckpt_number}"
-        video_dir.mkdir(parents=True, exist_ok=True)
         for i, episode in enumerate(test_episodes):
             frames = []
-            for i in range(len(episode['state'])):
-                frame = visualize_trajectory_step(env, episode, step_idx=i)
+            for step_idx in range(len(episode['state'])):
+                frame = visualize_trajectory_step(env, episode, step_idx=step_idx)
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             frames = np.array(frames)
             logger.add({
