@@ -11,8 +11,10 @@ import recall2imagine
 import ruamel.yaml as yaml
 from recall2imagine import embodied
 from recall2imagine.embodied.core.logger import AsyncOutput, _encode_gif
-from recall2imagine.train import make_envs, make_replay
 from recall2imagine.embodied.run.train import train
+from recall2imagine.train import make_envs, make_replay
+
+from powm.utils import set_seed
 
 warnings.filterwarnings("ignore", ".*truncated to dtype int32.*")
 
@@ -164,7 +166,7 @@ def main(argv=None):
     else:
         replay_dir = embodied.Path(args.replay_dir)
     replay_dir.mkdirs()
-
+    set_seed(config.seed)
     step = embodied.Counter()
     replay = make_replay(config, replay_dir)
     env = make_envs(config)

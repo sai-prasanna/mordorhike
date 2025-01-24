@@ -4,10 +4,12 @@ from functools import partial as bind
 import numpy as np
 import ruamel.yaml as yaml
 from dreamerv3 import embodied
-from dreamerv3.main import make_env, make_agent, make_replay
-from dreamerv3.embodied.run.train import train
 from dreamerv3.embodied.core.logger import AsyncOutput, _encode_gif
+from dreamerv3.embodied.run.train import train
+from dreamerv3.main import make_agent, make_env, make_replay
+
 import powm.envs
+from powm.utils import set_seed
 
 warnings.filterwarnings("ignore", ".*truncated to dtype int32.*")
 
@@ -130,6 +132,7 @@ def main(argv=None):
         config.save(logdir / "config.yaml")
         print("Saved config to", logdir / "config.yaml")
 
+    set_seed(config.seed)
     train(
         bind(make_agent, config),
         bind(make_replay, config),
@@ -140,7 +143,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    # main(
-    #     argv="--configs mordorhike size2m --run.steps 5e5 --run.save_every 1e5  --run.eval_every 1e5  --seed 42 --logdir ./test1 --wandb.project".split() + [""]
-    # )
     main()

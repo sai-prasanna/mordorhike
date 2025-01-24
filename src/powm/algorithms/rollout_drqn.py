@@ -1,3 +1,4 @@
+import random
 from collections import defaultdict
 
 import numpy as np
@@ -6,9 +7,10 @@ import torch
 from tqdm import tqdm
 
 from powm.algorithms.train_drqn import DRQN, Trajectory, build_env
+from powm.utils import set_seed
 
 
-def collect_rollouts(agent, config, num_episodes):
+def collect_rollouts(agent, config, num_episodes, epsilon=0.0):
     episode_data = []
 
     # Create vectorized environment
@@ -33,7 +35,8 @@ def collect_rollouts(agent, config, num_episodes):
             with torch.no_grad():
                 values, hidden_states = agent.Q(tau_t, hidden_states)
                 a = values.flatten().argmax().item()
-
+            if epsilon != 0.0 and random.random() < epsilon:
+                a = env.action_space.sample()
             latent = hidden_states[0][:, 0].cpu().numpy().reshape(1, 1, -1)
             
             
@@ -65,8 +68,7 @@ def main(argv=None):
     from dreamerv3 import embodied
     parsed, other = embodied.Flags(
         logdir="",
-        metric_dir="eval",
-        collect_n_episodes=110,
+        collect_n_episodes=300,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -75,8 +77,7 @@ def main(argv=None):
     config = embodied.Flags(config).parse(other)
 
     # Set seeds
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
+    set_seed(config.seed)
 
     # Create agent
     env = build_env(config.env.name, yaml.YAML(typ="safe").load(config.env.kwargs) or {}, config.seed)
@@ -102,16 +103,22 @@ def main(argv=None):
             episodes = collect_rollouts(
                 agent,
                 config,
-                num_episodes=parsed.collect_n_episodes  # Number of episodes to collect
+                num_episodes=parsed.collect_n_episodes
+            )
+            noisy_episodes = collect_rollouts(
+                agent,
+                config,
+                num_episodes=parsed.collect_n_episodes,
+                epsilon=0.25
             )
 
         # Save episode data
         np.savez(
             f"{parsed.logdir}/episodes_{step}.npz",
-            episodes=episodes
+            episodes=episodes,
+            noisy_episodes=noisy_episodes
         )
 
 
 if __name__ == "__main__":
     main()
-

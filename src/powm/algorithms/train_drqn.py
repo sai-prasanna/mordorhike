@@ -11,6 +11,7 @@ from dreamerv3.embodied.core import logger as embodied_logger
 
 import powm.envs
 from powm.algorithms.train_dreamer import VideoOutput
+from powm.utils import set_seed
 
 
 class GRU(nn.Module):
@@ -645,7 +646,7 @@ def train_drqn_agent(env, agent: DRQN, config, logger, ckpt_path):
                 }
                 checkpoint_path = ckpt_path / f'checkpoint_{logger.step.value}.ckpt'
                 torch.save(checkpoint, checkpoint_path)
-                torch.save(checkpoint, "checkpoint.ckpt")
+                torch.save(checkpoint, ckpt_path / "checkpoint.ckpt")
             
             if should_log(logger.step):
                 logger.add(epstats.result(), prefix='epstats')
@@ -720,8 +721,7 @@ def main(argv=None):
         print("Saved config to", logdir / "config.yaml")
 
     # Set seeds
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
+    set_seed(config.seed)
 
         
     if (logdir / "config.yaml").exists():

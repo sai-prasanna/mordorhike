@@ -1,4 +1,5 @@
 import copy
+import random
 from pathlib import Path
 
 import cv2
@@ -12,6 +13,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from powm.algorithms.train_dreamer import make_logger
 from powm.envs.mordor import MordorHike
+from powm.utils import set_seed
 
 
 class BeliefPredictor(nn.Module):
@@ -123,14 +125,14 @@ def visualize_trajectory_step(env, episode, step_idx):
         cv2.circle(img, tuple(pos_pixel.astype(np.int32)), 5, (0, 0, 255), -1)
     
     # Create label space and colorbar
-    label_height = 40
+    label_height = 20
     colorbar_height = 20
     bottom_space = np.zeros((label_height + colorbar_height, w*2, 3), dtype=np.uint8)
     
     # Add labels below images
     font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(bottom_space, "True", (w//2 - 50, 25), font, 0.7, (255, 255, 255), 2)
-    cv2.putText(bottom_space, "Predicted", (w + w//2 - 70, 25), font, 0.7, (255, 255, 255), 2)
+    cv2.putText(bottom_space, "True", (w//2 - 50, 25), font, 0.3, (255, 255, 255), 2)
+    cv2.putText(bottom_space, "Predicted", (w + w//2 - 70, 25), font, 0.3, (255, 255, 255), 2)
     
     # Create colorbar in RGB
     colorbar = np.linspace(255, 0, w*2).astype(np.uint8)  # Invert colorbar range
@@ -151,6 +153,34 @@ def visualize_trajectory_step(env, episode, step_idx):
         bottom_space
     ])
     return combined
+
+def calculate_episodic_kldivs(episodes, pred, Y, device, criterion):
+    """Calculate KL divergence for each episode in the dataset.
+    
+    Args:
+        episodes: List of episodes
+        pred: Model predictions (log probabilities)
+        Y: Ground truth labels
+        device: torch device
+        criterion: Loss function (KLDivLoss)
+    
+    Returns:
+        episode_kldivs: List of KL divergences for each episode
+        processed_episodes: Episodes with predicted_belief and discrete_belief added
+    """
+    belief_shape = episodes[0]["discrete_belief"][0].shape
+    episode_kldivs = []
+    idx = 0
+    for episode in episodes:
+        end_idx = idx + len(episode["belief"])
+        episode_pred = pred[idx:end_idx]
+        episode_Y = torch.FloatTensor(Y[idx:end_idx]).to(device)
+        episode["predicted_belief"] = torch.exp(pred[idx:end_idx]).reshape(-1, *belief_shape).detach().cpu().numpy()
+        episode["discrete_belief"] = Y[idx:end_idx].reshape(-1, *belief_shape)
+        episode_kldiv = criterion(episode_pred, episode_Y).cpu().item()
+        episode_kldivs.append(episode_kldiv)
+        idx = end_idx
+    return episode_kldivs, episodes
 
 def compute_prediction_metrics(episodes):
     num_pred_steps = episodes[0]['obs_hat'].shape[2]
@@ -183,9 +213,7 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
     scores = [episode['reward'].sum() for episode in episodes]
     returns = [np.sum(episode['reward'] * (discount_factor ** np.arange(len(episode['reward'])))) for episode in episodes]
     successes = [1. if episode['success'] else 0. for episode in episodes]
-    
-    
-    
+    episode_lengths = [len(episode['state']) for episode in episodes]
     metrics = {
         'score_mean': np.mean(scores),
         'score_std': np.std(scores),
@@ -193,11 +221,12 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
         'return_std': np.std(returns),
         'success_mean': np.mean(successes),
         'success_std': np.std(successes),
+        'length_mean': np.mean(episode_lengths),
+        'length_std': np.std(episode_lengths),
     }
     if 'obs_hat' in episodes[0]:
         metrics.update(compute_prediction_metrics(episodes))
     return metrics
-
 
 
 def main(argv=None):
@@ -212,6 +241,7 @@ def main(argv=None):
     # Load config
     config = embodied.Config.load(str(logdir / "config.yaml"))
     config = embodied.Flags(config).parse(other)
+    set_seed(config.seed)
     
     # Setup environment and device
     env = MordorHike.medium(render_mode="human", estimate_belief=True)
@@ -231,83 +261,83 @@ def main(argv=None):
         logger.step.load(ckpt_number)  # Set logger step to checkpoint number
         
         # Load episodes
-        episodes = np.load(
+        rollouts = np.load(
             logdir / f"episodes_{ckpt_number}.npz", 
             allow_pickle=True
-        )['episodes']
-
-        # Split episodes
-        n_episodes = len(episodes)
-        train_idx = int(0.8 * n_episodes)
-        val_idx = int(0.9 * n_episodes)
-
-        train_episodes = episodes[:train_idx]
-        val_episodes = episodes[train_idx:val_idx]
-        test_episodes = episodes[val_idx:]
-
-        # Preprocess data
-        train_X, train_Y = preprocess_episodes(train_episodes, env)
-        val_X, val_Y = preprocess_episodes(val_episodes, env)
-        test_X, test_Y = preprocess_episodes(test_episodes, env)
-        # Train predictor
-        model = train_belief_predictor(
-            train_X, train_Y, 
-            val_X, val_Y,
-            device
         )
-
-        # Evaluate and log metrics
-        overall_metrics = compute_overall_metrics(episodes)
-        model.eval()
-        criterion = nn.KLDivLoss(reduction='batchmean')
-
-        # Compute KL divergence only on test set
-        with torch.no_grad():
-            test_pred = model(torch.FloatTensor(test_X).to(device))
-            val_pred = model(torch.FloatTensor(val_X).to(device))
-            train_pred = model(torch.FloatTensor(train_X).to(device))
-            test_kldiv = criterion(test_pred, torch.FloatTensor(test_Y).to(device)).cpu().item()
-            val_kldiv = criterion(val_pred, torch.FloatTensor(val_Y).to(device)).cpu().item()
-            train_kldiv = criterion(train_pred, torch.FloatTensor(train_Y).to(device)).cpu().item()
-        # Calculate episode KL divergences for test episodes only
-        belief_shape = test_episodes[0]["discrete_belief"][0].shape
-        test_episode_kldivs = []
-        idx = 0
-        for episode in test_episodes:
-            end_idx = idx + len(episode["belief"])
-            episode_pred = test_pred[idx:end_idx]
-            episode_Y = torch.FloatTensor(test_Y[idx:end_idx]).to(device)
-            episode["predicted_belief"] = torch.exp(test_pred[idx:end_idx]).reshape(-1, *belief_shape).detach().cpu().numpy()
-            episode["discrete_belief"] = test_Y[idx:end_idx].reshape(-1, *belief_shape)
-            episode_kldiv = criterion(episode_pred, episode_Y).cpu().item()
-            test_episode_kldivs.append(episode_kldiv)
-            idx = end_idx
-        # Calculate test scores for correlation
-        test_scores = [episode['reward'].sum() for episode in test_episodes]
-
-        # Calculate correlation between episode KL divergence and scores (test set only)
-        score_kldiv_correlation = pearsonr(test_scores, test_episode_kldivs)[0]
-
-        overall_metrics.update({
-            'test_stepwise_kldiv': test_kldiv,
-            'val_stepwise_kldiv': val_kldiv,
-            'train_stepwise_kldiv': train_kldiv,
-            'test_episodic_kldiv_mean': np.mean(test_episode_kldivs),
-            'test_episodic_kldiv_std': np.std(test_episode_kldivs),
-            'test_score_episodic_kldiv_corr': score_kldiv_correlation,
-        })
-        logger.add(overall_metrics)
+        probe = None
+        for key in ["episodes", "noisy_episodes"]:
+            episodes = rollouts[key]
         
-        for i, episode in enumerate(test_episodes):
-            frames = []
-            for step_idx in range(len(episode['state'])):
-                frame = visualize_trajectory_step(env, episode, step_idx=step_idx)
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            frames = np.array(frames)
-            logger.add({
-                f"eval_video/{i}": frames
+            # Split episodes
+            n_episodes = len(episodes)
+            # using equal number of train, test, eval as the 
+            # kldiv metric is sensitive
+            train_idx = int(n_episodes / 3)
+            val_idx = 2 * train_idx
+
+            train_episodes = episodes[:train_idx]
+            val_episodes = episodes[train_idx:val_idx]
+            test_episodes = episodes[val_idx:]
+
+            # Preprocess data
+            train_X, train_Y = preprocess_episodes(train_episodes, env)
+            val_X, val_Y = preprocess_episodes(val_episodes, env)
+            test_X, test_Y = preprocess_episodes(test_episodes, env)
+            # Train predictor
+            if probe is None:
+                probe = train_belief_predictor(
+                    train_X, train_Y, 
+                    val_X, val_Y,
+                    device
+                )
+
+            # Evaluate and log metrics
+            overall_metrics = compute_overall_metrics(episodes)
+            probe.eval()
+            criterion = nn.KLDivLoss(reduction='batchmean')
+
+            # Calculate episode KL divergences for all sets
+            test_pred = probe(torch.FloatTensor(test_X).to(device))
+            val_pred = probe(torch.FloatTensor(val_X).to(device))
+            train_pred = probe(torch.FloatTensor(train_X).to(device))
+            
+            test_episode_kldivs, test_episodes = calculate_episodic_kldivs(
+                test_episodes, test_pred, test_Y, device, criterion)
+            val_episode_kldivs, _ = calculate_episodic_kldivs(
+                val_episodes, val_pred, val_Y, device, criterion)
+            train_episode_kldivs, _ = calculate_episodic_kldivs(
+                train_episodes, train_pred, train_Y, device, criterion)
+
+            # Calculate test scores for correlation
+            test_scores = [episode['reward'].sum() for episode in test_episodes]
+
+            # Calculate correlation between episode KL divergence and scores (test set only)
+            score_kldiv_correlation = pearsonr(test_scores, test_episode_kldivs)[0]
+
+            overall_metrics.update({
+                'test_stepwise_kldiv': criterion(test_pred, torch.FloatTensor(test_Y).to(device)).cpu().item(),
+                'val_stepwise_kldiv': criterion(val_pred, torch.FloatTensor(val_Y).to(device)).cpu().item(),
+                'train_stepwise_kldiv': criterion(train_pred, torch.FloatTensor(train_Y).to(device)).cpu().item(),
+                'test_episodic_kldiv_mean': np.mean(test_episode_kldivs),
+                'test_episodic_kldiv_std': np.std(test_episode_kldivs),
+                'train_episodic_kldiv_mean': np.mean(train_episode_kldivs),
+                'train_episodic_kldiv_std': np.std(train_episode_kldivs),
+                'test_score_episodic_kldiv_corr': score_kldiv_correlation,
             })
-        logger.write()
+            logger.add(overall_metrics, prefix=key)
+            visualize_episodes = np.random.choice(test_episodes, 10, replace=False)
+            
+            for i, episode in enumerate(visualize_episodes):
+                frames = []
+                for step_idx in range(len(episode['state'])):
+                    frame = visualize_trajectory_step(env, episode, step_idx=step_idx)
+                    frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                frames = np.array(frames)
+                logger.add({
+                    f"eval_video/{i}": frames
+                }, prefix=key)
+            logger.write()
     logger.close()
 
 

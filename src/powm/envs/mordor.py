@@ -1,5 +1,6 @@
-import time
 import random
+import time
+import warnings
 
 import cv2
 import gymnasium as gym
@@ -442,19 +443,19 @@ class MordorHike(gym.Env):
 
     def _world_to_pixel(self, coord):
         coord = np.asarray(coord)
-        x = np.round(
+        x = np.floor(
             (coord[..., 0] - self.map_lower_bound[0])
             / (self.map_upper_bound[0] - self.map_lower_bound[0])
-            * self.render_size[1]
+            * (self.render_size[1] - 1)
         ).astype(np.int32)
         # Flip y-axis for image coordinates
-        y = np.round(
+        y = np.floor(
             (
                 1
                 - (coord[..., 1] - self.map_lower_bound[1])
                 / (self.map_upper_bound[1] - self.map_lower_bound[1])
             )
-            * self.render_size[0]
+            * (self.render_size[0] - 1)
         ).astype(np.int32)
         return np.stack([x, y], axis=-1)
 

@@ -17,6 +17,7 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 from powm.algorithms.train_dreamer import VideoOutput
+from powm.utils import set_seed
 
 
 def make_logger(logdir: embodied.Path, config):
