@@ -10,7 +10,7 @@ from powm.algorithms.train_r2i import make_envs, make_logger
 from powm.utils import set_seed
 
 
-def collect_rollouts(agent, config, env, num_episodes, epsilon=0.0):
+def collect_rollouts(agent, control_agent, config, env, num_episodes, epsilon=0.0):
     episodes_data = []
     worker_episodes = defaultdict(lambda: defaultdict(list))
     scores = []
@@ -39,7 +39,7 @@ def collect_rollouts(agent, config, env, num_episodes, epsilon=0.0):
         current_episode["belief"].append(info["belief"])
         
         #Store raw deter and stoch temporarily
-        latent_keys = ["deter", "stoch", "hidden", "logit"]
+        latent_keys = ["deter", "stoch", "hidden", "logit", "control_deter", "control_stoch", "control_hidden"]
         for k in latent_keys:
             if k in tran.keys():
                 current_episode[k].append(tran[k])
@@ -77,15 +77,19 @@ def collect_rollouts(agent, config, env, num_episodes, epsilon=0.0):
                 # the batch becomes a dummy particle dimension
                 v = v.swapaxes(0, 1)
                 current_episode[key] = v
-            # Create one-hot latents for storage
-            deter = np.array(current_episode['deter'])
-            stoch = np.array(current_episode['stoch'])
-            stoch = stoch.reshape(*stoch.shape[:-2], -1)
-            hidden = np.array(current_episode['hidden'])
-            hidden = np.stack([hidden.real, hidden.imag], axis=-1)
-            hidden = hidden.reshape(*hidden.shape[:-3], -1)
-            # Concatenate with deter to get final latent
-            latents = np.concatenate([deter, stoch, hidden], axis=-1)
+            # Create latents for storage
+            def create_latents(deter, stoch, hidden):
+                deter = np.array(deter)
+                stoch = np.array(stoch)
+                stoch = stoch.reshape(*stoch.shape[:-2], -1)
+                hidden = np.array(hidden)
+                hidden = np.stack([hidden.real, hidden.imag], axis=-1)
+                hidden = hidden.reshape(*hidden.shape[:-3], -1)
+                return np.concatenate([deter, stoch, hidden], axis=-1)
+            
+            latents = create_latents(current_episode['deter'], current_episode['stoch'], current_episode['hidden'])
+            control_latents = create_latents(current_episode['control_deter'], current_episode['control_stoch'], current_episode['control_hidden'])
+            
             for k in latent_keys:
                 del current_episode[k]
             
@@ -96,15 +100,22 @@ def collect_rollouts(agent, config, env, num_episodes, epsilon=0.0):
                 **{k: np.array(v) for k, v in current_episode.items()},
                 # Add a dummy particle dimension
                 'latent': latents[:, np.newaxis, ...], 
+                'control_latent': control_latents[:, np.newaxis, ...],
                 "success": tran["is_terminal"]
             })
             current_episode.clear()
 
+    control_state = None
     def policy(obs, state, **kwargs):
+        nonlocal control_state
+        if state and 'control_deter' in state[0][0].keys():
+            del state[0][0]['control_deter']
+            del state[0][0]['control_stoch']
+            del state[0][0]['control_hidden']
         acts, state = agent.policy(obs, state, **kwargs)
-        if epsilon == 0.0:
-            return acts, state
-        else:
+        _, control_state = control_agent.policy(obs, control_state, **kwargs)
+        
+        if epsilon != 0.0:
             eps_acts = {}
             n_envs = len(driver._env)
             eps_mask = np.random.random(size=n_envs) < epsilon
@@ -116,7 +127,12 @@ def collect_rollouts(agent, config, env, num_episodes, epsilon=0.0):
                 eps_acts[k] = np.where(eps_mask[:, None], random_acts, acts[k])
             (prev_latent, _), task_state, expl_state = state
             state = (prev_latent, eps_acts['action']), task_state, expl_state
-            return acts, state
+            
+        control_state = (control_state[0][0], state[0][1]), control_state[1], control_state[2]
+        state[0][0]['control_deter'] = control_state[0][0]['deter']
+        state[0][0]['control_stoch'] = control_state[0][0]['stoch']
+        state[0][0]['control_hidden'] = control_state[0][0]['hidden']
+        return acts, state
     driver.on_step(log_step)
     driver(policy, episodes=num_episodes, record_state=True)
     return episodes_data
@@ -125,7 +141,6 @@ def collect_rollouts(agent, config, env, num_episodes, epsilon=0.0):
 def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
-        metric_dir="eval",
         collect_n_episodes=300,
     ).parse_known(argv)
     assert parsed.logdir, "Logdir is required"
@@ -142,8 +157,7 @@ def main(argv=None):
     env = make_envs(config, estimate_belief=True)
     step = embodied.Counter()
     agent = recall2imagine.Agent(env.obs_space, env.act_space, step, config)
-    logger = make_logger(logdir, step, config, metric_dir=parsed.metric_dir)
-
+    control_agent = recall2imagine.Agent(env.obs_space, env.act_space, step, config)
     for ckpt_path in sorted(ckpt_paths, key=lambda x: int(x.stem.split("_")[-1])):
         checkpoint = embodied.Checkpoint(ckpt_path)
         checkpoint.step = step
@@ -152,12 +166,14 @@ def main(argv=None):
         # Collect training data
         episodes = collect_rollouts(
             agent,
+            control_agent,
             config,
             env,
             parsed.collect_n_episodes,
         )
         noisy_episodes = collect_rollouts(
             agent,
+            control_agent,
             config,
             env,
             parsed.collect_n_episodes,

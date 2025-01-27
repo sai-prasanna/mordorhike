@@ -1,3 +1,4 @@
+import random
 from collections import defaultdict, deque
 
 import numpy as np
@@ -9,7 +10,7 @@ from storm_wm.utils import seed_np_torch
 from powm.algorithms.train_storm import build_single_env, build_vec_env
 
 
-def collect_rollouts(agent, world_model, config, num_episodes):
+def collect_rollouts(agent, world_model, control_world_model, config, num_episodes, epsilon=0.0):
     episodes_data = []
     current_episode = defaultdict(list)
     scores = []
@@ -31,21 +32,32 @@ def collect_rollouts(agent, world_model, config, num_episodes):
     for _ in range(num_episodes):
         done = False
         while not done:
-            # Regular episode collection (unchanged)
+            # Regular episode collection with added control latent collection
             if len(context_action) == 0:
                 action = vec_env.action_space.sample()
                 current_latent = None
+                control_current_latent = None
             else:
+                # Get main model latent
                 context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1))
                 model_context_action = np.stack(list(context_action), axis=1)
                 model_context_action = torch.Tensor(model_context_action).cuda()
                 prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
                     context_latent, model_context_action)
                 current_latent = torch.cat([prior_flattened_sample, last_dist_feat], dim=-1)
+
+                # Get control model latent
+                control_context_latent = control_world_model.encode_obs(torch.cat(list(context_obs), dim=1))
+                control_prior_flattened_sample, control_last_dist_feat = control_world_model.calc_last_dist_feat(
+                    control_context_latent, model_context_action)
+                control_current_latent = torch.cat([control_prior_flattened_sample, control_last_dist_feat], dim=-1)
+
                 action = agent.sample_as_env_action(
                     current_latent,
                     greedy=False
                 )
+            if epsilon != 0.0 and random.random() < epsilon:
+                action = vec_env.action_space.sample()
 
             if world_model.encoder_type == "cnn":
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
@@ -62,9 +74,11 @@ def collect_rollouts(agent, world_model, config, num_episodes):
             current_episode["reward"].append(reward)
             if current_latent is not None:
                 current_episode["latent"].append(current_latent.cpu().numpy())
+                current_episode["control_latent"].append(control_current_latent.cpu().numpy())
             else:
                 wm_dim = config.world_model.transformer_hidden_dim + 32*32
                 current_episode["latent"].append(np.zeros((1, 1, wm_dim)))
+                current_episode["control_latent"].append(np.zeros((1, 1, wm_dim)))
             
             if done:
                 rewards = np.array(current_episode["reward"])
@@ -151,8 +165,7 @@ def main(argv=None):
     from dreamerv3 import embodied
     parsed, other = embodied.Flags(
         logdir="",
-        metric_dir="eval",
-        collect_n_episodes=110,
+        collect_n_episodes=300,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -173,26 +186,40 @@ def main(argv=None):
     world_model = build_world_model(config, action_dim).eval()
     agent = build_agent(config, action_dim).eval()
     
+    # Build randomly initialized control world model
+    control_world_model = build_world_model(config, action_dim).eval()
+    
     # Load checkpoints
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
-        checkpoint = torch.load(str(ckpt_path))
+        checkpoint = torch.load(str(ckpt_path), weights_only=False)
         world_model.load_state_dict(checkpoint["world_model"])
         agent.load_state_dict(checkpoint["agent"])
+        
         # Collect rollouts
         with torch.no_grad():
             episodes = collect_rollouts(
                 agent,
-                world_model, 
+                world_model,
+                control_world_model,
                 config,
                 parsed.collect_n_episodes
+            )
+            noisy_episodes = collect_rollouts(
+                agent,
+                world_model,
+                control_world_model,
+                config,
+                parsed.collect_n_episodes,
+                epsilon=0.25
             )
             
         # Save episode data
         np.savez(
             f"{parsed.logdir}/episodes_{step}.npz",
-            episodes=episodes
+            episodes=episodes,
+            noisy_episodes=noisy_episodes
         )
         
 

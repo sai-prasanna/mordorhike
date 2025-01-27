@@ -13,7 +13,7 @@ from powm.algorithms.train_dreamer import make_env, make_logger
 from powm.utils import set_seed
 
 
-def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes: int, epsilon: float = 0.0):
+def collect_rollouts(agent, control_agent, config, driver: embodied.Driver, num_episodes: int, epsilon: float = 0.0):
     episodes_data = []
     current_episodes = {i: defaultdict(list) for i in range(driver.length)}
     scores = []
@@ -53,6 +53,8 @@ def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes: int, 
         # Store raw deter and stoch temporarily
         current_episode["_deter"].append(tran["deter"])
         current_episode["_stoch"].append(tran["stoch"])
+        current_episode["_control_deter"].append(tran["control_deter"])
+        current_episode["_control_stoch"].append(tran["control_stoch"])
 
         if tran["is_last"]:
             result = ep_stats.result()
@@ -71,6 +73,7 @@ def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes: int, 
                 'deter': np.array(current_episode['_deter'])[np.newaxis, ...],
                 'stoch': np.array(current_episode['_stoch'])[np.newaxis, ...]
             }
+            
             episode_actions = {k: np.array(v)[np.newaxis, ...] for k, v in current_episode.items() 
                              if k in driver.act_space.keys() and k != 'reset'}
             
@@ -88,29 +91,44 @@ def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes: int, 
                 v = v.swapaxes(1, 2) # Timestep * particles * n_steps * pred_dim
                 current_episode[key] = v
 
+            def convert_to_latent(deter, stoch):
+                stoch_one_hot = np.eye(config.dyn.rssm.classes)[stoch]
+                # Flatten the one-hot dimension
+                stoch_one_hot_flat = stoch_one_hot.reshape(*stoch_one_hot.shape[:-2], -1)
+                
+                # Concatenate with deter to get final latent
+                latents = np.concatenate([deter, stoch_one_hot_flat], axis=-1)
+                return latents
             # Create one-hot latents for storage
-            deter = np.array(current_episode['_deter'])
-            stoch = np.array(current_episode['_stoch'])
+            latents = convert_to_latent(
+                np.array(current_episode['_deter']),
+                np.array(current_episode['_stoch'])
+            )
+            control_latents = convert_to_latent(
+                np.array(current_episode['_control_deter']),
+                np.array(current_episode['_control_stoch'])
+            )
             # Convert categorical stoch to one-hot
-            stoch_one_hot = np.eye(config.dyn.rssm.classes)[stoch]
-            # Flatten the one-hot dimension
-            stoch_one_hot_flat = stoch_one_hot.reshape(*stoch_one_hot.shape[:-2], -1)
-            # Concatenate with deter to get final latent
-            latents = np.concatenate([deter, stoch_one_hot_flat], axis=-1)
             del current_episode['_deter']
             del current_episode['_stoch']
+            del current_episode['_control_deter']
+            del current_episode['_control_stoch']
             episodes_data.append({
                 **{k: np.array(v) for k, v in current_episode.items()},
                 'latent': latents,
+                'control_latent': control_latents,
                 "success": tran["is_terminal"]
             })
             current_episode.clear()
 
+    control_carry = None
     def policy(obs, carry, **kwargs):
+        nonlocal control_carry
+        if control_carry is None:
+            control_carry = carry
         acts, outs, carry = agent.policy(obs, carry, **kwargs)
-        if epsilon == 0:
-            return acts, outs, carry
-        else:
+        _, control_outs, control_carry = control_agent.policy(obs, control_carry, **kwargs)
+        if epsilon != 0.0:
             eps_acts = {}
             eps_mask = np.random.random(size=driver.length) < epsilon
             for k in acts.keys():
@@ -118,7 +136,11 @@ def collect_rollouts(agent, config, driver: embodied.Driver, num_episodes: int, 
                 random_acts = np.stack([act_space.sample() for _ in range(driver.length)])
                 eps_acts[k] = np.where(eps_mask, random_acts, acts[k])
             latent, _ = carry
-            return eps_acts, outs, (latent, agent._split(jax.device_put(eps_acts, agent.policy_sharded)))
+            acts, outs, carry = eps_acts, outs, (latent, agent._split(jax.device_put(eps_acts, agent.policy_sharded)))
+        outs['control_deter'] = control_outs['deter']
+        outs['control_stoch'] = control_outs['stoch']
+        control_carry = (control_carry[0], carry[1])
+        return acts, outs, carry
 
     driver.callbacks = []
     driver.on_step(log_step)
@@ -145,6 +167,7 @@ def main(argv=None):
     # Create the environment once
     env = make_env(config, index=0)
     agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+    control_agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
     env.close()
 
     checkpoint = embodied.Checkpoint()
@@ -158,6 +181,7 @@ def main(argv=None):
         driver = embodied.Driver(fns, config.run.driver_parallel)
         noisy_episodes = collect_rollouts(
             agent,
+            control_agent,
             config,
             driver,
             parsed.collect_n_episodes,
@@ -165,6 +189,7 @@ def main(argv=None):
         )
         episodes = collect_rollouts(
             agent,
+            control_agent,
             config,
             driver,
             parsed.collect_n_episodes, 
@@ -188,8 +213,4 @@ def main(argv=None):
 
 # Example usage
 if __name__ == "__main__":
-    # main(
-    #     argv="--logdir experiments/mordor_hike/037_dreamer_medium/42 --wandb.project".split() + [""]
-    # )
-
     main()

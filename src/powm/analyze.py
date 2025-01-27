@@ -29,17 +29,19 @@ class BeliefPredictor(nn.Module):
 
 def preprocess_episodes(episodes, env):
     """Preprocess episodes into training data"""
-    X, Y = [], []
+    X, X_rand, Y = [], [], []
     for episode in episodes:
         episode["discrete_belief"] = []
         for step in range(len(episode["belief"])):
             discretized_belief = env.discretize_belief(episode["belief"][step])
             episode["discrete_belief"].append(discretized_belief)
             latent = episode["latent"][step]
+            control_latent = episode["control_latent"][step]
+            X_rand.append(control_latent.reshape(-1))
             X.append(latent.reshape(-1))
             Y.append(discretized_belief.reshape(-1))
         episode["discrete_belief"] = np.array(episode["discrete_belief"])
-    return np.array(X), np.array(Y)
+    return np.array(X), np.array(X_rand), np.array(Y)
 
 def train_belief_predictor(train_X, train_Y, val_X, val_Y, device):
     """Train belief predictor and return best model"""
@@ -200,13 +202,13 @@ def compute_prediction_metrics(episodes):
             # Calculate MSE for this episode at this prediction step
             mse = np.mean((preds - trues) ** 2)
             step_mses[step].append(mse)
-
+    step_mses = np.array(step_mses)
     # Calculate statistics across episodes
     metrics = {}
     for step in range(num_pred_steps):
         metrics[f'obs_pred_{step+1}_step_mean'] = np.mean(step_mses[step])
         metrics[f'obs_pred_{step+1}_step_std'] = np.std(step_mses[step])
-    return metrics
+    return metrics, step_mses
 
 def compute_overall_metrics(episodes, discount_factor=0.99):
     """Compute metrics for episodes"""
@@ -225,7 +227,11 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
         'length_std': np.std(episode_lengths),
     }
     if 'obs_hat' in episodes[0]:
-        metrics.update(compute_prediction_metrics(episodes))
+        pred_metrics, step_mses = compute_prediction_metrics(episodes)
+        metrics.update(pred_metrics)
+        avg_mses = np.mean(step_mses, axis=0)
+        score_pred_error_corr = pearsonr(scores, avg_mses)[0]
+        metrics['score_pred_error_corr'] = score_pred_error_corr
     return metrics
 
 
@@ -265,7 +271,6 @@ def main(argv=None):
             logdir / f"episodes_{ckpt_number}.npz", 
             allow_pickle=True
         )
-        probe = None
         for key in ["episodes", "noisy_episodes"]:
             episodes = rollouts[key]
         
@@ -281,16 +286,20 @@ def main(argv=None):
             test_episodes = episodes[val_idx:]
 
             # Preprocess data
-            train_X, train_Y = preprocess_episodes(train_episodes, env)
-            val_X, val_Y = preprocess_episodes(val_episodes, env)
-            test_X, test_Y = preprocess_episodes(test_episodes, env)
+            train_X, train_X_control, train_Y = preprocess_episodes(train_episodes, env)
+            val_X, val_X_control, val_Y = preprocess_episodes(val_episodes, env)
+            test_X, test_X_control, test_Y = preprocess_episodes(test_episodes, env)
             # Train predictor
-            if probe is None:
-                probe = train_belief_predictor(
-                    train_X, train_Y, 
-                    val_X, val_Y,
-                    device
-                )
+            probe = train_belief_predictor(
+                train_X, train_Y, 
+                val_X, val_Y,
+                device
+            )
+            control_probe = train_belief_predictor(
+                train_X_control, train_Y,
+                val_X_control, val_Y,
+                device
+            )
 
             # Evaluate and log metrics
             overall_metrics = compute_overall_metrics(episodes)
@@ -302,6 +311,10 @@ def main(argv=None):
             val_pred = probe(torch.FloatTensor(val_X).to(device))
             train_pred = probe(torch.FloatTensor(train_X).to(device))
             
+            # Calculate episode KL divergences of the control probe
+            control_test_pred = control_probe(torch.FloatTensor(test_X_control).to(device))
+            control_test_episode_kldivs, _ = calculate_episodic_kldivs(
+                test_episodes, control_test_pred, test_Y, device, criterion)
             test_episode_kldivs, test_episodes = calculate_episodic_kldivs(
                 test_episodes, test_pred, test_Y, device, criterion)
             val_episode_kldivs, _ = calculate_episodic_kldivs(
@@ -309,21 +322,35 @@ def main(argv=None):
             train_episode_kldivs, _ = calculate_episodic_kldivs(
                 train_episodes, train_pred, train_Y, device, criterion)
 
+            diff_episode_kldivs = np.array(control_test_episode_kldivs) - np.array(test_episode_kldivs)
+
             # Calculate test scores for correlation
             test_scores = [episode['reward'].sum() for episode in test_episodes]
 
             # Calculate correlation between episode KL divergence and scores (test set only)
             score_kldiv_correlation = pearsonr(test_scores, test_episode_kldivs)[0]
-
+            test_stepwise_kldiv_all = nn.KLDivLoss(reduction='none')(test_pred, torch.FloatTensor(test_Y).to(device)).sum(-1).detach().cpu().numpy()
+            control_test_stepwise_kldiv_all = nn.KLDivLoss(reduction='none')(control_test_pred, torch.FloatTensor(test_Y).to(device)).sum(-1).detach().cpu().numpy()
+            test_stepwise_kldiv = np.mean(test_stepwise_kldiv_all)
+            control_test_stepwise_kldiv = np.mean(control_test_stepwise_kldiv_all)
+            kl_diff_all = control_test_stepwise_kldiv - test_stepwise_kldiv
+            kl_diff = np.mean(kl_diff_all)
+            
             overall_metrics.update({
-                'test_stepwise_kldiv': criterion(test_pred, torch.FloatTensor(test_Y).to(device)).cpu().item(),
+                'test_stepwise_kldiv': test_stepwise_kldiv,
                 'val_stepwise_kldiv': criterion(val_pred, torch.FloatTensor(val_Y).to(device)).cpu().item(),
                 'train_stepwise_kldiv': criterion(train_pred, torch.FloatTensor(train_Y).to(device)).cpu().item(),
-                'test_episodic_kldiv_mean': np.mean(test_episode_kldivs),
+                'control_test_stepwise_kldiv': control_test_stepwise_kldiv,
+                'test_stepwise_kldiv_diff': kl_diff,
+                'test_episodic_kldiv': np.mean(test_episode_kldivs),
                 'test_episodic_kldiv_std': np.std(test_episode_kldivs),
-                'train_episodic_kldiv_mean': np.mean(train_episode_kldivs),
+                'train_episodic_kldiv': np.mean(train_episode_kldivs),
                 'train_episodic_kldiv_std': np.std(train_episode_kldivs),
                 'test_score_episodic_kldiv_corr': score_kldiv_correlation,
+                'control_test_episodic_kldiv': np.mean(control_test_episode_kldivs),
+                'control_test_episodic_kldiv_std': np.std(control_test_episode_kldivs),
+                'test_episodic_kldiv_diff': np.mean(diff_episode_kldivs),
+                'episodic_kldiv_diff_std': np.std(diff_episode_kldivs),
             })
             logger.add(overall_metrics, prefix=key)
             visualize_episodes = np.random.choice(test_episodes, 10, replace=False)
