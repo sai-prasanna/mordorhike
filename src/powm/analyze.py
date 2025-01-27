@@ -126,15 +126,8 @@ def visualize_trajectory_step(env, episode, step_idx):
         cv2.polylines(img, [path_pixels.astype(np.int32)], False, (0, 0, 255), 2)
         cv2.circle(img, tuple(pos_pixel.astype(np.int32)), 5, (0, 0, 255), -1)
     
-    # Create label space and colorbar
-    label_height = 20
+    # Create colorbar space
     colorbar_height = 20
-    bottom_space = np.zeros((label_height + colorbar_height, w*2, 3), dtype=np.uint8)
-    
-    # Add labels below images
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(bottom_space, "True", (w//2 - 50, 25), font, 0.3, (255, 255, 255), 2)
-    cv2.putText(bottom_space, "Predicted", (w + w//2 - 70, 25), font, 0.3, (255, 255, 255), 2)
     
     # Create colorbar in RGB
     colorbar = np.linspace(255, 0, w*2).astype(np.uint8)  # Invert colorbar range
@@ -143,19 +136,16 @@ def visualize_trajectory_step(env, episode, step_idx):
     colorbar = cv2.resize(colorbar, (w*2, colorbar_height))
     
     # Add min/max labels to colorbar
+    font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(colorbar, "0.0", (5, 15), font, 0.5, (255, 255, 255), 1)
     cv2.putText(colorbar, "1.0", (w*2-30, 15), font, 0.5, (255, 255, 255), 1)
-    
-    # Place colorbar in bottom space
-    bottom_space[label_height:, :] = colorbar
     
     # Stack everything together
     combined = np.vstack([
         np.hstack([true_vis, pred_vis]),
-        bottom_space
+        colorbar
     ])
     return combined
-
 def calculate_episodic_kldivs(episodes, pred, Y, device, criterion):
     """Calculate KL divergence for each episode in the dataset.
     
