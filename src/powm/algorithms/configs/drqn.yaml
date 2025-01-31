@@ -3,6 +3,7 @@ defaults:
   logdir: logs/drqn/{timestamp}
   device: cuda
   filter: '.*'
+  write_logs: True  # If True, enables all logging (jsonl, tensorboard, video, wandb). If False, only terminal output.
 
   train:
     steps: 500000  # Total number of training steps
@@ -41,5 +42,6 @@ debug:
   run:
     steps: 10000
     log_every: 100
+  write_logs: False
   wandb:
     project: ""

@@ -10,6 +10,7 @@ dependencies = [
     "gymnasium>=0.29",
     "ipykernel>=6.29.5",
     "matplotlib>=3.9.2",
+    "neural-pipeline-search>=0.12.2",
     "opencv-python>=4.10.0.84",
     "recall2imagine",
     "scikit-learn>=1.6.0",
@@ -26,6 +27,7 @@ recall2imagine = { path = "third_party/recall2imagine", editable = true }
 storm-wm = { path = "third_party/STORM", editable = true }
 
 [project.scripts]
+tune-drqn = "powm.algorithms.tune_drqn:main"
 train-dreamer = "powm.algorithms.train_dreamer:main"
 rollout-dreamer = "powm.algorithms.rollout_dreamer:main"
 train-r2i = "powm.algorithms.train_r2i:main"
@@ -35,6 +37,7 @@ rollout-storm = "powm.algorithms.rollout_storm:main"
 train-drqn = "powm.algorithms.train_drqn:main"
 rollout-drqn = "powm.algorithms.rollout_drqn:main"
 analyze = "powm.analyze:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

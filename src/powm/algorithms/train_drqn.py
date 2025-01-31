@@ -291,6 +291,7 @@ class DRQN(nn.Module):
         )
         for param in self.Q_tar.parameters():
             param.requires_grad = False
+        self.to(device)
 
     def eval_rollout(self, environment, num_rollouts):
         """
@@ -653,7 +654,14 @@ def train_drqn_agent(env, agent: DRQN, config, logger, ckpt_path):
                 logger.add(agg.result(), prefix='agg')
                 logger.write()
 
-            
+        # Save final checkpoint
+        checkpoint = {
+            'agent': agent.state_dict(),
+            'optimizer': optim.state_dict(),
+            'step': logger.step.value,
+            'config': config
+        }
+        torch.save(checkpoint, ckpt_path / "checkpoint.ckpt")
         score = trajectory.get_cumulative_reward(gamma=config.train.gamma)
         length = trajectory.num_transitions
 
@@ -669,23 +677,30 @@ def train_drqn_agent(env, agent: DRQN, config, logger, ckpt_path):
     env.close()
 
 def make_logger(logdir: embodied.Path, config):
-    loggers = [
-        embodied_logger.TerminalOutput(),
-        embodied_logger.JSONLOutput(logdir, "metrics.jsonl"),
-        embodied_logger.TensorBoardOutput(logdir),
-        VideoOutput(logdir, fps=8),
-        embodied_logger.WandBOutput(
-            wandb_init_kwargs=dict(
-                project=config.wandb.project,
-                group=logdir.parent.name,
-                name=logdir.name,
-                config=dict(config),
-                dir=logdir,
-            )
-        ) if config.wandb.project else None,
-    ]
-    loggers = [x for x in loggers if x is not None]
+    """Create a logger for training metrics."""
+    loggers = [embodied_logger.TerminalOutput()]  # Always include terminal output
+    
+    if config.write_logs:
+        # Add all other loggers when write_logs is true
+        loggers.extend([
+            embodied_logger.JSONLOutput(logdir, "metrics.jsonl"),
+            embodied_logger.TensorBoardOutput(logdir),
+            VideoOutput(logdir, fps=8),
+        ])
+        # Only add wandb if project is specified
+        if config.wandb.project:
+            loggers.append(embodied_logger.WandBOutput(
+                wandb_init_kwargs=dict(
+                    project=config.wandb.project,
+                    group=config.wandb.group or logdir.parent.name,
+                    name=config.wandb.name or logdir.name,
+                    config=dict(config),
+                    dir=logdir,
+                )
+            ))
+    
     return embodied_logger.Logger(embodied.Counter(), loggers)
+
 def build_env(env_name, env_kwargs, seed):
     env = gymnasium.make(env_name, render_mode="rgb_array", **env_kwargs)
     env = gymnasium.wrappers.TransformObservation(
@@ -696,61 +711,36 @@ def build_env(env_name, env_kwargs, seed):
     env.reset(seed=seed)
     return env
 
+DRQN_CONFIG_PATH = embodied.Path(__file__).parent / "configs" / "drqn.yaml"
+
 def main(argv=None):
     
-    # Load configs
-    configs = yaml.safe_load((embodied.Path(__file__).parent / "configs/drqn.yaml").read())
-    parsed, other = embodied.Flags(configs=["defaults"]).parse_known(argv)
-    config = embodied.Config(configs["defaults"])
-    for name in parsed.configs:
-        config = config.update(configs[name])
-    config = embodied.Flags(config).parse(other)
-    config = config.update(
-        logdir=config.logdir.format(timestamp=embodied.timestamp()),
-    )
+    # Load config
+    config = embodied.Config(yaml.safe_load(DRQN_CONFIG_PATH.read())["defaults"])
+    config = embodied.Flags(config).parse(argv)
     
-    # Create logdir
+    # Setup logging and environment
     logdir = embodied.Path(config.logdir)
-    logdir.mkdir()
-    
-    if (logdir / "config.yaml").exists():
-        config = embodied.Config.load(logdir / "config.yaml")
-        print("Loaded config from", logdir / "config.yaml")
-    else:
-        config.save(logdir / "config.yaml")
-        print("Saved config to", logdir / "config.yaml")
-
-    # Set seeds
+    config.save(logdir / 'config.yaml')
     set_seed(config.seed)
-
         
-    if (logdir / "config.yaml").exists():
-        config = embodied.Config.load(logdir / "config.yaml")
-        print("Loaded config from", logdir / "config.yaml")
-    else:
-        config.save(logdir / "config.yaml")
-        print("Saved config to", logdir / "config.yaml")
-    
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
     env_kwargs = yaml.YAML(typ="safe").load(config.env.kwargs) or {}
     env = build_env(config.env.name, env_kwargs, config.seed)
-    
+    logger = make_logger(logdir, config)    
     action_size = env.action_space.n
     observation_size = env.observation_space.shape[0]
 
     agent = DRQN(
         action_size=action_size,
         observation_size=observation_size,
-        device=device,
+        device=config.device,
         num_layers=config.drqn.num_layers,
         hidden_size=config.drqn.hidden_size
     )
-    agent.to(device)
+    agent.to(config.device)
     
     # print number of trainable parameters
     print(f"Number of trainable parameters: {sum(p.numel() for p in agent.parameters() if p.requires_grad)}")
-    logger = make_logger(logdir, config)
     train_drqn_agent(env, agent, config, logger, logdir)
 
 if __name__ == "__main__":
