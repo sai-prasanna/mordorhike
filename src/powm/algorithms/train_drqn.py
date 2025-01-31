@@ -699,7 +699,7 @@ def build_env(env_name, env_kwargs, seed):
 def main(argv=None):
     
     # Load configs
-    configs = yaml.safe_load((embodied.Path(__file__).parent / "drqn_configs.yaml").read())
+    configs = yaml.safe_load((embodied.Path(__file__).parent / "configs/drqn.yaml").read())
     parsed, other = embodied.Flags(configs=["defaults"]).parse_known(argv)
     config = embodied.Config(configs["defaults"])
     for name in parsed.configs:

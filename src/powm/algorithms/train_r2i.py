@@ -144,7 +144,7 @@ class VideoOutput(AsyncOutput):
 def main(argv=None):
 
     configs = yaml.YAML(typ="safe").load(
-        (embodied.Path(__file__).parent / "r2i_configs.yaml").read()
+        (embodied.Path(__file__).parent / "configs/r2i.yaml").read()
     )
     parsed, other = embodied.Flags(configs=["defaults", "mordorhike"]).parse_known(argv)
     config = embodied.Config(configs["defaults"])

@@ -101,7 +101,7 @@ class VideoOutput(AsyncOutput):
 
 def main(argv=None):
     configs = yaml.YAML(typ="safe").load(
-        (embodied.Path(__file__).parent / "dreamer_configs.yaml").read()
+        (embodied.Path(__file__).parent / "configs/dreamer.yaml").read()
     )
     parsed, other = embodied.Flags(configs=["defaults", "mordorhike"]).parse_known(argv)
     config = embodied.Config(configs["defaults"])

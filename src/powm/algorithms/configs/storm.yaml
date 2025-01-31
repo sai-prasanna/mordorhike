@@ -51,6 +51,8 @@ defaults:
   # Wandb Settings
   wandb:
     project: "powm"
+    group: ""
+    name: ""
 
 size4m:
   world_model:

@@ -263,7 +263,7 @@ def main(argv=None):
     torch.backends.cudnn.allow_tf32 = True
 
     # Load configs
-    configs = yaml.safe_load((embodied.Path(__file__).parent / "storm_config.yaml").read())
+    configs = yaml.safe_load((embodied.Path(__file__).parent / "configs/storm.yaml").read())
     parsed, other = embodied.Flags(configs=["defaults"]).parse_known(argv)
     config = embodied.Config(configs["defaults"])
     for name in parsed.configs:
