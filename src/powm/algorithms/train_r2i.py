@@ -1,15 +1,10 @@
 import collections
 import re
 import warnings
-from collections import defaultdict
-from functools import partial as bind
 
-import gymnasium as gym
-import jax
 import numpy as np
-import recall2imagine
 import ruamel.yaml as yaml
-from recall2imagine import embodied
+from recall2imagine.agent import Agent, embodied
 from recall2imagine.embodied.core.logger import AsyncOutput, _encode_gif
 from recall2imagine.embodied.run.train import train
 from recall2imagine.train import make_envs, make_replay
@@ -67,32 +62,37 @@ def make_logger(logdir, step, config, metric_dir=None):
         logdir = logdir / metric_dir
         logdir.mkdirs()
 
-    loggers = [
-        embodied.logger.TerminalOutput(config.filter),
-        embodied.logger.JSONLOutput(logdir, f"metrics.jsonl"),
-        embodied.logger.TensorBoardOutput(logdir),
-        VideoOutput(logdir),
-    ]
-    if config.wandb.project:
-        loggers.append(
-            WandBOutput(
-                wandb_init_kwargs=dict(
-                    project=config.wandb.project,
-                    group=config.wandb.group or config_logdir.parent.name,
-                    name=(
-                        config.wandb.name
-                        or (
-                            config_logdir.name + f"_{metric_dir}"
-                            if metric_dir
-                            else config_logdir.name
-                        )
-                    ),
-                    config=dict(config),
-                    resume=True,
-                    dir=logdir,
-                )
-            ),
-        )
+    # Always include terminal output
+    loggers = [embodied.logger.TerminalOutput(config.filter)]
+    
+    # Only add other loggers if write_logs is True
+    if config.write_logs:
+        loggers.extend([
+            embodied.logger.JSONLOutput(logdir, f"metrics.jsonl"),
+            embodied.logger.TensorBoardOutput(logdir),
+            VideoOutput(logdir),
+        ])
+        # Only add wandb if project is specified and write_logs is True
+        if config.wandb.project:
+            loggers.append(
+                WandBOutput(
+                    wandb_init_kwargs=dict(
+                        project=config.wandb.project,
+                        group=config.wandb.group or config_logdir.parent.name,
+                        name=(
+                            config.wandb.name
+                            or (
+                                config_logdir.name + f"_{metric_dir}"
+                                if metric_dir
+                                else config_logdir.name
+                            )
+                        ),
+                        config=dict(config),
+                        resume=True,
+                        dir=logdir,
+                    )
+                ),
+            )
     return embodied.Logger(step, loggers, multiplier)
 
 
@@ -171,7 +171,7 @@ def main(argv=None):
     replay = make_replay(config, replay_dir)
     env = make_envs(config)
     logger = make_logger(logdir, step, config)
-    agent = recall2imagine.Agent(env.obs_space, env.act_space, step, config)
+    agent = Agent(env.obs_space, env.act_space, step, config)
     replay.set_agent(agent)
     train(agent, env, replay, logger, args, config)
     env.close()

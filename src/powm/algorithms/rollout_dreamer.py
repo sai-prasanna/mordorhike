@@ -13,7 +13,35 @@ from powm.algorithms.train_dreamer import make_env, make_logger
 from powm.utils import set_seed
 
 
-def collect_rollouts(agent, control_agent, config, driver: embodied.Driver, num_episodes: int, epsilon: float = 0.0):
+def collect_rollouts(
+    checkpoint_path: str | None,
+    config,
+    driver: embodied.Driver,
+    num_episodes: int,
+    epsilon: float = 0.0,
+    collect_only_rewards: bool = False
+):
+    """Collect rollouts from a Dreamer agent.
+    
+    Args:
+        checkpoint_path: Path to checkpoint to load, or None for random agent
+        config: Configuration object
+        driver: Driver for environment interaction
+        num_episodes: Number of episodes to collect
+        epsilon: Exploration rate
+        collect_only_rewards: If True, only collect rewards
+    """
+    # Create agent
+    env = make_env(config, index=0)
+    agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+    control_agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+    env.close()
+
+    if checkpoint_path is not None:
+        checkpoint = embodied.Checkpoint()
+        checkpoint.agent = agent
+        checkpoint.load(checkpoint_path, keys=['agent'])
+
     episodes_data = []
     current_episodes = {i: defaultdict(list) for i in range(driver.length)}
     scores = []
@@ -28,6 +56,24 @@ def collect_rollouts(agent, control_agent, config, driver: embodied.Driver, num_
         ep_stats.add("score", tran["reward"], agg="sum")
         ep_stats.add("length", 1, agg="sum")
         ep_stats.add("rewards", tran["reward"], agg="stack")
+
+        if collect_only_rewards:
+            current_episode = current_episodes[worker]
+            current_episode["reward"].append(tran["reward"])
+            if tran["is_last"]:
+                result = ep_stats.result()
+                scores.append(result["score"])
+                lengths.append(result["length"])
+                rewards = result["rewards"]
+                discount_factor = 1 - 1 / config.horizon
+                discounts = discount_factor ** np.arange(len(rewards))
+                discounted_return = np.sum(rewards * discounts)
+                returns.append(discounted_return)
+                episodes_data.append({
+                    'reward': np.array(current_episode['reward']),
+                })
+                current_episode.clear()
+            return
 
         # Get environment info
         if driver.parallel:
@@ -180,19 +226,19 @@ def main(argv=None):
         fns = [bind(make_env, config, index=i, estimate_belief=True) for i in range(config.run.num_envs)]
         driver = embodied.Driver(fns, config.run.driver_parallel)
         noisy_episodes = collect_rollouts(
-            agent,
-            control_agent,
+            ckpt_path,
             config,
             driver,
             parsed.collect_n_episodes,
-            epsilon=0.25
+            epsilon=0.25,
+            collect_only_rewards=False
         )
         episodes = collect_rollouts(
-            agent,
-            control_agent,
+            ckpt_path,
             config,
             driver,
             parsed.collect_n_episodes, 
+            collect_only_rewards=False
         )
         driver.close()
         # fns = [bind(make_env, config, index=i, estimate_belief=True, translate_step=0.05) for i in range(config.run.num_envs)]

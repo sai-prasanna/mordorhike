@@ -28,6 +28,7 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     metrics_every: 10
+  write_logs: True
 
   run:
     script: train

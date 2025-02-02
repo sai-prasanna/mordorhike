@@ -21,32 +21,37 @@ def make_logger(config, metric_dir=""):
         logdir = logdir / metric_dir
         logdir.mkdir()
 
-    loggers = [
-        embodied.logger.TerminalOutput(config.filter),
-        embodied.logger.JSONLOutput(logdir, f"metrics.jsonl"),
-        embodied.logger.TensorBoardOutput(logdir),
-        VideoOutput(logdir),
-    ]
-    if config.wandb.project:
-        loggers.append(
-            embodied.logger.WandBOutput(
-                wandb_init_kwargs=dict(
-                    project=config.wandb.project,
-                    group=config.wandb.group or config_logdir.parent.name,
-                    name=(
-                        config.wandb.name
-                        or (
-                            config_logdir.name + f"_{metric_dir}"
-                            if metric_dir
-                            else config_logdir.name
-                        )
-                    ),
-                    config=dict(config),
-                    resume=True,
-                    dir=logdir,
-                )
-            ),
-        )
+    # Always include terminal output
+    loggers = [embodied.logger.TerminalOutput(config.filter)]
+    
+    # Only add other loggers if write_logs is True
+    if config.write_logs:
+        loggers.extend([
+            embodied.logger.JSONLOutput(logdir, f"metrics.jsonl"),
+            embodied.logger.TensorBoardOutput(logdir),
+            VideoOutput(logdir),
+        ])
+        # Only add wandb if project is specified and write_logs is True
+        if config.wandb.project:
+            loggers.append(
+                embodied.logger.WandBOutput(
+                    wandb_init_kwargs=dict(
+                        project=config.wandb.project,
+                        group=config.wandb.group or config_logdir.parent.name,
+                        name=(
+                            config.wandb.name
+                            or (
+                                config_logdir.name + f"_{metric_dir}"
+                                if metric_dir
+                                else config_logdir.name
+                            )
+                        ),
+                        config=dict(config),
+                        resume=True,
+                        dir=logdir,
+                    )
+                ),
+            )
     return embodied.Logger(
         embodied.Counter(),
         loggers,

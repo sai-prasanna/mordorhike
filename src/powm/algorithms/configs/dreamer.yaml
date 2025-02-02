@@ -8,6 +8,7 @@ defaults:
   filter: 'score|length|fps|ratio|train/.*_loss$|train/rand/.*/mean'
   tensorboard_videos: True
   wandb: {project: '', group: '', name: ''}
+  write_logs: True
 
 
   replay:
