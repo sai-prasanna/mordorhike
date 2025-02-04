@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, deter_size: int, 
                      hidden_size: int, classes: int, units: int, env_steps: int, 
-                     train_ratio: int, training_args: list[str]) -> float:
+                     train_ratio: int, batch_size: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating Dreamer with multiple seeds."""
     seeds = [1337, 42, 13]  # Use 3 different seeds
     scores = []
@@ -32,6 +32,7 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, deter_size
         f"--dyn.rssm.deter={deter_size}",
         f"--dyn.rssm.hidden={hidden_size}",
         f"--dyn.rssm.classes={classes}",
+        f"--run.batch_size={batch_size}",
         f"--.*\\.units={units}",  # Set units for all layers
         f"--run.train_ratio={train_ratio}",
         "--run.save_each_ckpt=False",  # Disable intermediate checkpoints
@@ -97,6 +98,12 @@ def main():
             log=True,
             default=4e-5,
         ),
+        batch_size=neps.Integer(
+            lower=8,
+            upper=128,
+            default=16,
+            log=True,
+        ),
         deter_size=neps.Integer(
             lower=64,
             upper=1024,
@@ -128,7 +135,7 @@ def main():
         ),
         train_ratio=neps.Integer(
             lower=128,
-            upper=512,
+            upper=1024,
             default=512,
             log=True,
         ),
@@ -142,6 +149,8 @@ def main():
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
+        overwrite_working_directory=False,
+        post_run_summary=True
     )
 
 if __name__ == "__main__":

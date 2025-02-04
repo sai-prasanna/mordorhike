@@ -15,7 +15,7 @@ from powm.utils import set_seed
 
 logging.basicConfig(level=logging.INFO)
 
-def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, hidden_size: int, num_layers: int, env_steps: int, train_every: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
+def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size: int, hidden_size: int, num_layers: int, env_steps: int, train_every: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating DRQN with multiple seeds."""
     seeds = [1337, 42, 13]  # Use 3 different seeds
     scores = []
@@ -27,6 +27,7 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, hidden_siz
     hparam_args = [
         f"--train.steps={env_steps}",
         f"--train.learning_rate={learning_rate}",
+        f"--train.batch_size={batch_size}",
         f"--train.epsilon={epsilon}",
         f"--train.train_every={train_every}",
         f"--train.target_period={train_every * 10}",
@@ -91,6 +92,12 @@ def main():
             log=True,
             default=1e-3, 
         ),
+        batch_size=neps.Integer(
+            lower=32,
+            upper=256,
+            default=32,
+            log=True,
+        ),
         hidden_size=neps.Integer(
             lower=32, 
             upper=512,
@@ -127,10 +134,12 @@ def main():
     neps.run(
         run_pipeline=partial(evaluate_pipeline, training_args=training_args),
         pipeline_space=pipeline_space,
-        searcher="priorband",  # Use Hyperband optimizer
+        searcher="priorband",
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
+        overwrite_working_directory=False,
+        post_run_summary=True
     )
 if __name__ == "__main__":
-    main() 
+    main()

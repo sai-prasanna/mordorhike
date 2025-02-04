@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 def evaluate_pipeline(pipeline_directory: Path, rssm_deter: int, 
                      rssm_units: int, units: int, mlp_layers: int, ssm_layers: int, env_steps: int, 
-                     train_ratio: int, wm_lr: float, actor_critic_lr: float, training_args: list[str]) -> float:
+                     train_ratio: int, wm_lr: float, actor_critic_lr: float, batch_size: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating R2I with multiple seeds."""
     seeds = [1337, 42, 13]  # Use 3 different seeds
     scores = []
@@ -28,6 +28,7 @@ def evaluate_pipeline(pipeline_directory: Path, rssm_deter: int,
     # Get original command line arguments and append our hyperparameters
     hparam_args = [
         f"--run.steps={env_steps}",
+        f"--batch_size={batch_size}",
         f"--rssm.deter={rssm_deter}",
         f"--rssm.units={rssm_units}",
         f"--rssm.hidden={rssm_units//2}",
@@ -105,6 +106,12 @@ def main():
             log=True,
             default=3e-5,
         ),
+        batch_size=neps.Integer(
+            lower=4,
+            upper=32,
+            default=4,
+            log=True,
+        ),
         rssm_deter=neps.Integer(
             lower=256,
             upper=1024,
@@ -154,6 +161,8 @@ def main():
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
+        overwrite_working_directory=False,
+        post_run_summary=True
     )
 
 if __name__ == "__main__":
