@@ -16,8 +16,9 @@ from powm.utils import set_seed
 logging.basicConfig(level=logging.INFO)
 
 def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size: int, hidden_size: int, num_layers: int, env_steps: int, train_every: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
+    
     """Evaluate a configuration by training and evaluating DRQN with multiple seeds."""
-    seeds = [1337, 42, 13]  # Use 3 different seeds
+    seeds = [1337, 42, 13, 5, 94]  # Use 5 different seeds
     scores = []
     
     # Use the pipeline_directory provided by NEPS which contains a unique config ID
@@ -69,7 +70,8 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size
         logdir.rmtree()
 
     # Return negative mean return across seeds (NEPS minimizes)
-    return -np.mean(scores)
+    score = -float(np.mean(scores))
+    return score
 
 def main():
     """Run hyperparameter optimization using NEPS."""
@@ -81,7 +83,7 @@ def main():
     neps_group.add_argument("--neps_max_evaluations_per_run", type=int, default=1, help="Number of configurations to evaluate per run")
     # env steps budget
     neps_group.add_argument("--neps_env_steps_min", type=int, default=100000, help="Minimum number of environment steps to evaluate for a configuration")
-    neps_group.add_argument("--neps_env_steps_max", type=int, default=500000, help="Maximum number of environment steps to evaluate for a configuration")
+    neps_group.add_argument("--neps_env_steps_max", type=int, default=300000, help="Maximum number of environment steps to evaluate for a configuration")
     args, training_args = parser.parse_known_args()  # Use known_args to ignore training script args
     set_seed(42)
     # Define search space    
@@ -139,7 +141,7 @@ def main():
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
-        post_run_summary=True
+        post_run_summary=True,
     )
 if __name__ == "__main__":
     main()
