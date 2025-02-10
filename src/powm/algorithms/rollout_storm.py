@@ -1,6 +1,7 @@
 import random
 from collections import defaultdict, deque
 
+import cv2
 import numpy as np
 import ruamel.yaml as yaml
 import torch
@@ -10,7 +11,27 @@ from storm_wm.utils import seed_np_torch
 from powm.algorithms.train_storm import build_single_env, build_vec_env
 
 
-def collect_rollouts(agent, world_model, control_world_model, config, num_episodes, epsilon=0.0):
+def collect_rollouts(
+    checkpoint_path: str,
+    config,
+    num_episodes: int,
+    epsilon: float = 0.0,
+    collect_only_rewards: bool = False,
+    waypoints: list = None,
+):
+    """Collect rollouts from an agent.
+    
+    Args:
+        checkpoint_path: Path to checkpoint to load, or None for random agent
+        config: Configuration object
+        num_episodes: Number of episodes to collect
+        epsilon: Exploration rate
+        collect_only_rewards: If True, only collect rewards
+        waypoints: If provided, list of waypoints to follow
+        
+    Returns:
+        List of episode data dictionaries
+    """
     episodes_data = []
     current_episode = defaultdict(list)
     scores = []
@@ -19,14 +40,35 @@ def collect_rollouts(agent, world_model, control_world_model, config, num_episod
     
     # Create vectorized environment
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
-    env_kwargs["estimate_belief"] = True
-    vec_env = build_vec_env(config.env.name, 1, config.seed, env_kwargs)
+    if not collect_only_rewards:
+        env_kwargs["estimate_belief"] = True
+    vec_env = build_vec_env(config.env.name, 1, config.seed, env_kwargs, type="sync")
     
+    # Build world model and agent
+    from powm.algorithms.train_storm import build_agent, build_world_model
+    dummy_env = build_single_env(config.env.name, env_kwargs, config.seed, 0)
+    action_dim = dummy_env.action_space.n
+    dummy_env.close()
+    
+    world_model = build_world_model(config, action_dim).eval()
+    agent = build_agent(config, action_dim).eval()
+    control_world_model = build_world_model(config, action_dim).eval()
+    
+    # Load checkpoint if provided
+    checkpoint = torch.load(str(checkpoint_path), weights_only=False)
+    world_model.load_state_dict(checkpoint["world_model"])
+    agent.load_state_dict(checkpoint["agent"])
+
     current_obs, info = vec_env.reset()
     context_obs = deque(maxlen=16)
     context_action = deque(maxlen=16)
     
     IMAGINE_STEPS = 5
+    
+    # Initialize waypoint tracking
+    visited = None
+    following_waypoints = waypoints is not None
+    final_waypoint_step = None
     
     # Collect episodes
     for _ in range(num_episodes):
@@ -52,10 +94,21 @@ def collect_rollouts(agent, world_model, control_world_model, config, num_episod
                     control_context_latent, model_context_action)
                 control_current_latent = torch.cat([control_prior_flattened_sample, control_last_dist_feat], dim=-1)
 
+                # Default to agent's action
                 action = agent.sample_as_env_action(
                     current_latent,
                     greedy=False
                 )
+
+            # Check for waypoint action
+            if following_waypoints:
+                waypoint_action, visited = vec_env.envs[0].unwrapped.get_waypoint_action(waypoints, visited)
+                if waypoint_action is not None:
+                    action = np.array([waypoint_action])
+                else:  # Current waypoint reached or all waypoints visited
+                    following_waypoints = False
+                    final_waypoint_step = len(current_episode["reward"])
+
             if epsilon != 0.0 and random.random() < epsilon:
                 action = vec_env.action_space.sample()
 
@@ -64,21 +117,23 @@ def collect_rollouts(agent, world_model, control_world_model, config, num_episod
             else:
                 context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B D -> B 1 D"))
             context_action.append(action)
-            current_episode["state"].append(info["state"])
-            current_episode["belief"].append(info["belief"])
+            
+            if not collect_only_rewards:
+                current_episode["state"].append(info["state"])
+                current_episode["belief"].append(info["belief"])
+                current_episode["obs"].append(current_obs)
+                current_episode["action"].append(action)
+                if current_latent is not None:
+                    current_episode["latent"].append(current_latent.cpu().numpy())
+                    current_episode["control_latent"].append(control_current_latent.cpu().numpy())
+                else:
+                    wm_dim = config.world_model.transformer_hidden_dim + 32*32
+                    current_episode["latent"].append(np.zeros((1, 1, wm_dim)))
+                    current_episode["control_latent"].append(np.zeros((1, 1, wm_dim)))
+            
             obs, reward, terminated, truncated, info = vec_env.step(action)
             done = terminated or truncated
-            
-            current_episode["obs"].append(current_obs)
-            current_episode["action"].append(action)
             current_episode["reward"].append(reward)
-            if current_latent is not None:
-                current_episode["latent"].append(current_latent.cpu().numpy())
-                current_episode["control_latent"].append(control_current_latent.cpu().numpy())
-            else:
-                wm_dim = config.world_model.transformer_hidden_dim + 32*32
-                current_episode["latent"].append(np.zeros((1, 1, wm_dim)))
-                current_episode["control_latent"].append(np.zeros((1, 1, wm_dim)))
             
             if done:
                 rewards = np.array(current_episode["reward"])
@@ -93,68 +148,82 @@ def collect_rollouts(agent, world_model, control_world_model, config, num_episod
                 discounted_return = np.sum(rewards * discounts)
                 returns.append(discounted_return)
                 
-                # Prepare episode data for imagination
-                if world_model.encoder_type == "cnn":
-                    episode_obs_tensor = torch.Tensor(np.array(current_episode["obs"])).cuda()
-                    episode_obs_tensor = rearrange(episode_obs_tensor, "T B H W C -> B T C H W")/255
+                if collect_only_rewards:
+                    current_episode["reward"] = np.array(current_episode["reward"])[:, 0]
                 else:
-                    episode_obs_tensor = torch.Tensor(np.array(current_episode["obs"])).cuda()
-                    episode_obs_tensor = rearrange(episode_obs_tensor, "T B D -> B T D")
-                
-                episode_actions_tensor = torch.Tensor(np.array(current_episode["action"])).cuda()
-                episode_actions_tensor = rearrange(episode_actions_tensor, "T B -> B T")
-                
-                # Initialize world model for imagination
-                world_model.storm_transformer.reset_kv_cache_list(1, dtype=world_model.tensor_dtype)
-                context_latent = world_model.encode_obs(episode_obs_tensor)
-                imagined_trajectories = []
-                last_latent = None
-                
-                # Incrementally build KV cache and imagine
-                for t in range(len(current_episode["obs"]) - IMAGINE_STEPS):
-                    _, _, _, last_latent, _ = world_model.predict_next(
-                        context_latent[:, t:t+1],
-                        episode_actions_tensor[:, t:t+1],
-                        log_video=False
-                    )
+                    # Prepare episode data for imagination
+                    if world_model.encoder_type == "cnn":
+                        episode_obs_tensor = torch.Tensor(np.array(current_episode["obs"])).cuda()
+                        episode_obs_tensor = rearrange(episode_obs_tensor, "T B H W C -> B T C H W")/255
+                    else:
+                        episode_obs_tensor = torch.Tensor(np.array(current_episode["obs"])).cuda()
+                        episode_obs_tensor = rearrange(episode_obs_tensor, "T B D -> B T D")
                     
-                    # Store KV cache reference
-                    kv_cache_list = world_model.storm_transformer.kv_cache_list.copy()
+                    episode_actions_tensor = torch.Tensor(np.array(current_episode["action"])).cuda()
+                    episode_actions_tensor = rearrange(episode_actions_tensor, "T B -> B T")
                     
-                    # Imagine next IMAGINE_STEPS
-                    imagined_obs = []
-                    imagined_latent = last_latent
+                    # Initialize world model for imagination
+                    world_model.storm_transformer.reset_kv_cache_list(1, dtype=world_model.tensor_dtype)
+                    context_latent = world_model.encode_obs(episode_obs_tensor)
+                    imagined_trajectories = []
+                    last_latent = None
                     
-                    for step in range(IMAGINE_STEPS):
-                        true_action = episode_actions_tensor[:, t+step+1:t+step+2]
-                        obs_hat, _, _, imagined_latent, _ = world_model.predict_next(
-                            imagined_latent,
-                            true_action,
-                            log_video=True
+                    # Incrementally build KV cache and imagine
+                    for t in range(len(current_episode["obs"]) - IMAGINE_STEPS):
+                        _, _, _, last_latent, _ = world_model.predict_next(
+                            context_latent[:, t:t+1],
+                            episode_actions_tensor[:, t:t+1],
+                            log_video=False
                         )
-                        imagined_obs.append(obs_hat)
+                        
+                        # Store KV cache reference
+                        kv_cache_list = world_model.storm_transformer.kv_cache_list.copy()
+                        
+                        # Imagine next IMAGINE_STEPS
+                        imagined_obs = []
+                        imagined_latent = last_latent
+                        
+                        for step in range(IMAGINE_STEPS):
+                            true_action = episode_actions_tensor[:, t+step+1:t+step+2]
+                            obs_hat, _, _, imagined_latent, _ = world_model.predict_next(
+                                imagined_latent,
+                                true_action,
+                                log_video=True
+                            )
+                            imagined_obs.append(obs_hat)
+                        
+                        imagined_trajectories.append(torch.cat(imagined_obs, dim=1))
+                        
+                        # Reset KV cache to reference point
+                        world_model.storm_transformer.kv_cache_list = kv_cache_list
+                    imagined_trajectories = torch.stack(imagined_trajectories, dim=1).cpu().float().numpy()
                     
-                    imagined_trajectories.append(torch.cat(imagined_obs, dim=1))
+                    # consistent shapes for recorded data
+                    current_episode["obs"] = np.array(current_episode["obs"])[:, 0]
+                    current_episode["action"] = np.array(current_episode["action"])[:, 0]
+                    current_episode["reward"] = np.array(current_episode["reward"])[:, 0]
+                    # timesteps x particles x latent_dim (some latents don't have particles like STORM)
+                    current_episode["latent"] = np.array(current_episode["latent"])[:, 0]
+                    # timesteps x particles x belief_dim
+                    current_episode["belief"] = np.array(current_episode["belief"])[:, 0]
+                    # remove batch dim, add particle dim as it is just 1 for STORM
+                    # Timesteps x particles x future_prediction_timesteps x obs_dim
+                    current_episode["obs_hat"] = np.array(imagined_trajectories)[0][:, np.newaxis, ...]
+                    current_episode["state"] = np.array(current_episode["state"])[:, 0]
+                    current_episode["success"] = terminated[0]
                     
-                    # Reset KV cache to reference point
-                    world_model.storm_transformer.kv_cache_list = kv_cache_list
-                imagined_trajectories = torch.stack(imagined_trajectories, dim=1).cpu().float().numpy()
+                    # Add waypoint information if applicable
+                    if waypoints is not None:
+                        current_episode["final_waypoint_step"] = np.array(final_waypoint_step)
+                        current_episode["waypoints"] = waypoints
                 
-                # consistent shapes for recorded data
-                current_episode["obs"] = np.array(current_episode["obs"])[:, 0]
-                current_episode["action"] = np.array(current_episode["action"])[:, 0]
-                current_episode["reward"] = np.array(current_episode["reward"])[:, 0]
-                # timesteps x particles x latent_dim (some latents don't have particles like STORM)
-                current_episode["latent"] = np.array(current_episode["latent"])[:, 0]
-                # timesteps x particles x belief_dim
-                current_episode["belief"] = np.array(current_episode["belief"])[:, 0]
-                # remove batch dim, add particle dim as it is just 1 for STORM
-                # Timesteps x particles x future_prediction_timesteps x obs_dim
-                current_episode["obs_hat"] = np.array(imagined_trajectories)[0][:, np.newaxis, ...]
-                current_episode["state"] = np.array(current_episode["state"])[:, 0]
-                current_episode["success"] = terminated[0]
                 episodes_data.append(dict(current_episode))
                 current_episode = defaultdict(list)
+                
+                # Reset waypoint tracking for new episode
+                visited = None
+                following_waypoints = waypoints is not None
+                final_waypoint_step = None
             
             current_obs = obs
     vec_env.close()
@@ -166,6 +235,8 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         collect_n_episodes=300,
+        episodes_per_waypoint=10,
+        num_waypoints=3,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -178,48 +249,48 @@ def main(argv=None):
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
     env_kwargs["estimate_belief"] = True
     dummy_env = build_single_env(config.env.name, env_kwargs, config.seed, 0)
-    action_dim = dummy_env.action_space.n
-    dummy_env.close()
     
-    # Build world model and agent
-    from powm.algorithms.train_storm import build_agent, build_world_model
-    world_model = build_world_model(config, action_dim).eval()
-    agent = build_agent(config, action_dim).eval()
-    
-    # Build randomly initialized control world model
-    control_world_model = build_world_model(config, action_dim).eval()
-    
-    # Load checkpoints
+    # Load checkpoints and collect rollouts
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
-        checkpoint = torch.load(str(ckpt_path), weights_only=False)
-        world_model.load_state_dict(checkpoint["world_model"])
-        agent.load_state_dict(checkpoint["agent"])
         
         # Collect rollouts
         with torch.no_grad():
+            # Regular and noisy episodes
             episodes = collect_rollouts(
-                agent,
-                world_model,
-                control_world_model,
-                config,
-                parsed.collect_n_episodes
+                checkpoint_path=ckpt_path,
+                config=config,
+                num_episodes=parsed.collect_n_episodes
             )
             noisy_episodes = collect_rollouts(
-                agent,
-                world_model,
-                control_world_model,
-                config,
-                parsed.collect_n_episodes,
+                checkpoint_path=ckpt_path,
+                config=config,
+                num_episodes=parsed.collect_n_episodes,
                 epsilon=0.25
             )
+            # Collect waypoint episodes in batches
+            waypoint_rng = np.random.RandomState(42)
+            waypoint_episodes = []
+            episodes_collected = 0
             
+            while episodes_collected < parsed.collect_n_episodes:
+                waypoints = dummy_env.unwrapped.generate_random_waypoints(parsed.num_waypoints, rng=waypoint_rng)
+                num_episodes = min(parsed.episodes_per_waypoint, parsed.collect_n_episodes - episodes_collected)
+                episodes = collect_rollouts(
+                    checkpoint_path=ckpt_path,
+                    config=config,
+                    num_episodes=num_episodes,
+                    waypoints=waypoints
+                )
+                waypoint_episodes.extend(episodes)
+                episodes_collected += len(episodes)
         # Save episode data
         np.savez(
             f"{parsed.logdir}/episodes_{step}.npz",
             episodes=episodes,
-            noisy_episodes=noisy_episodes
+            noisy_episodes=noisy_episodes,
+            waypoint_episodes=waypoint_episodes
         )
         
 

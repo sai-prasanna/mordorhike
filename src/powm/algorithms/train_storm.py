@@ -54,13 +54,16 @@ def build_single_env(env_name, env_kwargs, seed ,index=0):
     return env
 
 
-def build_vec_env(env_name, num_envs, seed, env_kwargs):
+def build_vec_env(env_name, num_envs, seed, env_kwargs, type="async"):
     # lambda pitfall refs to: https://python.plainenglish.io/python-pitfalls-with-variable-capture-dcfc113f39b7
     def lambda_generator(env_name, i):
         return lambda: build_single_env(env_name, env_kwargs, seed, i)
     env_fns = []
     env_fns = [lambda_generator(env_name, i) for i in range(num_envs)]
-    vec_env = gymnasium.vector.AsyncVectorEnv(env_fns=env_fns)
+    if type == "async":
+        vec_env = gymnasium.vector.AsyncVectorEnv(env_fns=env_fns)
+    else:
+        vec_env = gymnasium.vector.SyncVectorEnv(env_fns=env_fns)
     return vec_env
 
 

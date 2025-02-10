@@ -206,6 +206,7 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
     returns = [np.sum(episode['reward'] * (discount_factor ** np.arange(len(episode['reward'])))) for episode in episodes]
     successes = [1. if episode['success'] else 0. for episode in episodes]
     episode_lengths = [len(episode['state']) for episode in episodes]
+            
     metrics = {
         'score_mean': np.mean(scores),
         'score_std': np.std(scores),
@@ -216,6 +217,10 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
         'length_mean': np.mean(episode_lengths),
         'length_std': np.std(episode_lengths),
     }
+    if 'waypoint' in episodes[0]:
+        waypoint_scores = [episode['reward'][:episode['waypoint_step']].sum() for episode in episodes]
+        metrics['after_waypoints_score_mean'] = np.mean(waypoint_scores)
+        metrics['after_waypoints_score_std'] = np.std(waypoint_scores)
     if 'obs_hat' in episodes[0]:
         pred_metrics, step_mses = compute_prediction_metrics(episodes)
         metrics.update(pred_metrics)
@@ -261,7 +266,7 @@ def main(argv=None):
             logdir / f"episodes_{ckpt_number}.npz", 
             allow_pickle=True
         )
-        for key in ["episodes", "noisy_episodes"]:
+        for key in ["episodes", "noisy_episodes", "waypoint_episodes"]:
             episodes = rollouts[key]
         
             # Split episodes

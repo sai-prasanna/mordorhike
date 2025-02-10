@@ -1,6 +1,7 @@
 import random
 from collections import defaultdict
 
+import cv2
 import numpy as np
 import ruamel.yaml as yaml
 import torch
@@ -16,6 +17,7 @@ def collect_rollouts(
     num_episodes: int,
     epsilon: float = 0.0,
     collect_only_rewards: bool = False,
+    waypoints: list = None,
 ):
     """Collect rollouts from an agent.
     
@@ -25,9 +27,10 @@ def collect_rollouts(
         num_episodes: Number of episodes to collect
         epsilon: Exploration rate
         collect_only_rewards: If True, only collect rewards
+        waypoints: If provided, list of waypoints to follow
         
     Returns:
-        List of episode data dictionaries. If collect_only_rewards=True, only reward data is collected.
+        List of episode data dictionaries
     """
     # Create environment
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
@@ -67,6 +70,7 @@ def collect_rollouts(
         episode = defaultdict(list)
         
         o, infos = env.reset()
+        
         trajectory = Trajectory(env.action_space.n, env.observation_space.shape[0])
         trajectory.add(None, None, o)
 
@@ -75,16 +79,32 @@ def collect_rollouts(
         terminated = False
         truncated = False
         
+        # Reset waypoint tracking for new episode
+        visited = None
+        following_waypoints = waypoints is not None
+        final_waypoint_step = None
+        
         while not (terminated or truncated):
             tau_t = trajectory.get_last_observed().view(1, 1, -1).to(agent.device)
             with torch.no_grad():
                 values, hidden_states = agent.Q(tau_t, hidden_states)
                 if not collect_only_rewards:
-                    # Get control latents from control agent
                     _, control_hidden_states = control_agent.Q(tau_t, control_hidden_states)
-                a = values.flatten().argmax().item()
-            if epsilon != 0.0 and random.random() < epsilon:
-                a = env.action_space.sample()
+            
+            a = None
+            # Get action based on current policy mode
+            if following_waypoints:
+                a, visited = env.unwrapped.get_waypoint_action(waypoints, visited)
+                if a is None:  # Current waypoint reached or all waypoints visited
+                    following_waypoints = False
+                    final_waypoint_step = len(episode["reward"])
+            
+            if a is None:
+                # Use agent policy
+                with torch.no_grad():
+                    a = values.flatten().argmax().item()
+                if epsilon != 0.0 and random.random() < epsilon:
+                    a = env.action_space.sample()
             
             if not collect_only_rewards:
                 # Extract latent states
@@ -114,6 +134,9 @@ def collect_rollouts(
                     episode["control_latent"] = np.array(episode["control_latent"])
                     episode["belief"] = np.array(episode["belief"])
                     episode["success"] = np.array(terminated)
+                    if waypoints is not None:
+                        episode["final_waypoint_step"] = np.array(final_waypoint_step)
+                        episode["waypoints"] = waypoints
                 episode_data.append(episode)
                 rolled_out_episodes += 1
     
@@ -175,6 +198,8 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         collect_n_episodes=300,
+        episodes_per_waypoint=10,
+        num_waypoints=3,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -185,12 +210,17 @@ def main(argv=None):
     # Set seeds
     set_seed(config.seed)
     
+    # Create environment for waypoint generation
+    env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
+    env = build_env(config.env.name, env_kwargs, config.seed)
+    
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
 
         # Collect rollouts
         with torch.no_grad():
+            # Collect regular and noisy episodes
             episodes = collect_rollouts(
                 checkpoint_path=ckpt_path,
                 config=config,
@@ -202,13 +232,33 @@ def main(argv=None):
                 num_episodes=parsed.collect_n_episodes,
                 epsilon=0.25,
             )
-
+            # Collect waypoint episodes in batches
+            waypoint_rng = np.random.RandomState(42)
+            waypoint_episodes = []
+            episodes_collected = 0
+            
+            while episodes_collected < parsed.collect_n_episodes:
+                waypoints = env.unwrapped.generate_random_waypoints(parsed.num_waypoints, rng=waypoint_rng)
+                num_episodes = min(parsed.episodes_per_waypoint, parsed.collect_n_episodes - episodes_collected)
+                episodes = collect_rollouts(
+                    checkpoint_path=ckpt_path,
+                    config=config,
+                    num_episodes=num_episodes,
+                    waypoints=waypoints,
+                )
+                waypoint_episodes.extend(episodes)
+                episodes_collected += len(episodes)
+            
+            
         # Save episode data
         np.savez(
             f"{parsed.logdir}/episodes_{step}.npz",
             episodes=episodes,
-            noisy_episodes=noisy_episodes
+            noisy_episodes=noisy_episodes,
+            waypoint_episodes=waypoint_episodes
         )
+    
+    env.close()
 
 
 if __name__ == "__main__":

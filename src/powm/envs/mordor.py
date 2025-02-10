@@ -565,7 +565,7 @@ class MordorHike(gym.Env):
 
         # Choose the most probable action for the first step
         return np.argmax(log_probs[0])
-
+        
     def discretize_belief(self, belief, grid_x_y_size=0.1, grid_angle_size=np.pi/2):
         n_bins_x = np.ceil((self.map_upper_bound[0] - self.map_lower_bound[0]) / grid_x_y_size).astype(int)
         n_bins_y = np.ceil((self.map_upper_bound[1] - self.map_lower_bound[1]) / grid_x_y_size).astype(int)
@@ -583,6 +583,113 @@ class MordorHike(gym.Env):
         )
         return grid / grid.sum()
 
+    def get_waypoint_action(self, waypoints, visited=None):
+        """Returns action to move towards next unvisited waypoint.
+        
+        Args:
+            waypoints: List of (x,y) waypoint positions
+            visited: List of booleans indicating which waypoints have been visited.
+                    If None, initializes new visited array.
+        
+        Returns:
+            Tuple of (action, visited), where action is the next action to take
+            (or None if all waypoints visited) and visited is the updated visited array
+        """
+        # Initialize visited array if None
+        if visited is None:
+            visited = np.zeros(len(waypoints), dtype=bool)
+        
+        # Get current position
+        current_pos = self.state[:2]
+        
+        # Check and update if we've reached current waypoint
+        for i, (waypoint, is_visited) in enumerate(zip(waypoints, visited)):
+            if not is_visited and np.linalg.norm(current_pos - waypoint) <= self.translate_step * 2:
+                visited[i] = True
+        
+        # Find next unvisited waypoint
+        next_waypoint = None
+        for i, (waypoint, is_visited) in enumerate(zip(waypoints, visited)):
+            if not is_visited:
+                next_waypoint = waypoint
+                break
+        
+        if next_waypoint is None:
+            return None, visited  # All waypoints visited
+        
+        # Get current orientation
+        theta = self.state[2]
+        
+        # Calculate direction vector to waypoint
+        direction = next_waypoint - current_pos
+        
+        # Calculate angle between forward vector and goal direction
+        angle = np.arctan2(direction[1], direction[0]) - theta
+        angle = (angle + np.pi) % (2 * np.pi) - np.pi  # Normalize to [-pi, pi]
+        
+        is_rotate = self.lateral_action == "rotate"
+        
+        if is_rotate:
+            # If roughly facing goal, move forward
+            if abs(angle) < np.pi/4:
+                return 0, visited  # Forward
+            # Otherwise rotate towards goal
+            elif angle > 0:
+                return 2, visited  # Turn left
+            else:
+                return 3, visited  # Turn right
+        else:
+            # For lateral movement, we can move sideways
+            if abs(angle) < np.pi/4:
+                return 0, visited  # Forward
+            elif abs(angle - np.pi/2) < np.pi/4:
+                return 2, visited  # Strafe left
+            elif abs(angle + np.pi/2) < np.pi/4:
+                return 3, visited  # Strafe right
+            else:
+                return 1, visited  # Backward
+
+    def generate_random_waypoints(self, n_waypoints, rng):
+        """Generate random waypoints within the map bounds.
+        
+        Args:
+            n_waypoints: Number of waypoints to generate
+            rng: Random number generator instance
+            
+        Returns:
+            Array of shape (n_waypoints, 2) containing waypoint positions
+        """
+        # Generate initial random points
+        waypoints = []
+        # Minimum distance between waypoints and waypoint from goal
+        min_dist = self.translate_step * 10  
+        goal = self.goal_position
+        
+        # Keep trying until we have enough valid waypoints
+        attempts = 0
+        while len(waypoints) < n_waypoints and attempts < 1000:
+            # Generate random point in [-1, 1] range
+            point = rng.uniform(self.map_lower_bound, self.map_upper_bound, 2)
+            
+            # Check if point is far enough from goal
+            if np.linalg.norm(point - goal) < min_dist:
+                attempts += 1
+                continue
+                
+            # Check if point is too close to previous waypoint
+            if len(waypoints) > 0:
+                if np.linalg.norm(point - waypoints[-1]) < min_dist:
+                    attempts += 1
+                    continue
+                    
+            waypoints.append(point)
+            attempts += 1
+            
+        if len(waypoints) < n_waypoints:
+            warnings.warn(f"Could only generate {len(waypoints)} waypoints")
+            
+        return np.array(waypoints)
+
 def main():
     """
     Allows to play with the MordorHike environment using keyboard controls.
@@ -593,6 +700,9 @@ def main():
     obs, _ = env.reset(seed=2)
 
     cum_rew = 0.0
+    
+    waypoints = np.array([[0.0, 0.0], [-1.0, -1.0]])
+    visited = np.zeros(len(waypoints), dtype=bool)
     
     while True:
         done = False
@@ -624,6 +734,11 @@ def main():
                     discount=0.99,
                     update_smooth_factor=0.1,
                 )
+            elif key == ord("v"):
+                action, visited = env.get_waypoint_action(waypoints, visited)
+                if action is None:
+                    print("All waypoints visited or current waypoint reached")
+                    action = 0
             elif key == ord("e"):
                 sampled_particle = random.choice(env.particles)
                 env.particles = np.tile(sampled_particle, (env.num_particles, 1))
@@ -646,6 +761,12 @@ def main():
                     discount=0.99,
                     batch_size=32,
                 )
+            elif key == ord("p"):
+                action = env.predefined_policy(mode="diagonal")
+            elif key == ord("u"):
+                action = env.predefined_policy(mode="up_right")
+            elif key == ord("i"):
+                action = env.predefined_policy(mode="right_up")
             else:
                 continue
             start_time = time.time()
