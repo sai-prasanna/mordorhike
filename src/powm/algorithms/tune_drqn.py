@@ -15,7 +15,7 @@ from powm.utils import set_seed
 
 logging.basicConfig(level=logging.INFO)
 
-def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size: int, hidden_size: int, num_layers: int, env_steps: int, train_every: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
+def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size: int, hidden_size: int, num_layers: int, env_steps: int, train_every: int, target_update_mult: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
     
     """Evaluate a configuration by training and evaluating DRQN with multiple seeds."""
     seeds = [1337, 42, 13, 5, 94]  # Use 5 different seeds
@@ -31,7 +31,7 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size
         f"--train.batch_size={batch_size}",
         f"--train.epsilon={epsilon}",
         f"--train.train_every={train_every}",
-        f"--train.target_period={train_every * 10}",
+        f"--train.target_period={train_every * target_update_mult}",
         f"--train.num_gradient_steps={num_gradient_steps}",
         "--train.save_every=999999999",  # Only save final checkpoint
         f"--drqn.hidden_size={hidden_size}",
@@ -83,7 +83,8 @@ def main():
     neps_group.add_argument("--neps_max_evaluations_per_run", type=int, default=1, help="Number of configurations to evaluate per run")
     # env steps budget
     neps_group.add_argument("--neps_env_steps_min", type=int, default=100000, help="Minimum number of environment steps to evaluate for a configuration")
-    neps_group.add_argument("--neps_env_steps_max", type=int, default=300000, help="Maximum number of environment steps to evaluate for a configuration")
+    neps_group.add_argument("--neps_env_steps_max", type=int, default=500000, help="Maximum number of environment steps to evaluate for a configuration")
+    neps_group.add_argument("--neps_eta", type=int, default=2, help="eta for priorband")
     args, training_args = parser.parse_known_args()  # Use known_args to ignore training script args
     set_seed(42)
     # Define search space    
@@ -121,6 +122,11 @@ def main():
             default=10,
             upper=100,
         ),
+        target_update_mult=neps.Integer(
+            lower=5,
+            upper=10,
+            default=10,
+        ),
         epsilon=neps.Float(
             lower=0.1,
             upper=0.3,
@@ -142,6 +148,7 @@ def main():
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
+        eta=args.neps_eta,
     )
 if __name__ == "__main__":
     main()

@@ -85,7 +85,8 @@ def main():
     neps_group.add_argument("--neps_max_evaluations_total", type=int, default=50)
     neps_group.add_argument("--neps_max_evaluations_per_run", type=int, default=1)
     neps_group.add_argument("--neps_env_steps_min", type=int, default=100000)
-    neps_group.add_argument("--neps_env_steps_max", type=int, default=300000)
+    neps_group.add_argument("--neps_env_steps_max", type=int, default=500000)
+    neps_group.add_argument("--neps_eta", type=int, default=2)
     args, training_args = parser.parse_known_args()
     
     set_seed(42)
@@ -150,7 +151,8 @@ def main():
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
-        post_run_summary=True
+        post_run_summary=True,
+        eta=args.neps_eta,
     )
 
 if __name__ == "__main__":

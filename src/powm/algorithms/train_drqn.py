@@ -714,13 +714,17 @@ def build_env(env_name, env_kwargs, seed):
 DRQN_CONFIG_PATH = embodied.Path(__file__).parent / "configs" / "drqn.yaml"
 
 def main(argv=None):
-    
+    configs = yaml.safe_load(DRQN_CONFIG_PATH.read())
     # Load config
-    config = embodied.Config(yaml.safe_load(DRQN_CONFIG_PATH.read())["defaults"])
-    config = embodied.Flags(config).parse(argv)
+    parsed, other = embodied.Flags(configs=["defaults", "mordorhike"]).parse_known(argv)
+    config = embodied.Config(configs["defaults"])
+    for name in parsed.configs:
+        config = config.update(configs[name])
+    config = embodied.Flags(config).parse(other)
     
     # Setup logging and environment
     logdir = embodied.Path(config.logdir)
+    logdir.mkdir()
     config.save(logdir / 'config.yaml')
     set_seed(config.seed)
         
