@@ -15,7 +15,7 @@ from powm.utils import set_seed
 
 logging.basicConfig(level=logging.INFO)
 
-def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, deter_size: int, 
+def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, log_deter_size: int, 
                      hidden_size: int, classes: int, units: int, env_steps: int, 
                      train_ratio: int, batch_size: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating Dreamer with multiple seeds."""
@@ -29,10 +29,10 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, deter_size
     hparam_args = [
         f"--run.steps={env_steps}",
         f"--opt.lr={learning_rate}",
-        f"--dyn.rssm.deter={deter_size}",
+        f"--dyn.rssm.deter={2**log_deter_size}",
         f"--dyn.rssm.hidden={hidden_size}",
         f"--dyn.rssm.classes={classes}",
-        f"--run.batch_size={batch_size}",
+        f"--batch_size={batch_size}",
         f"--.*\\.units={units}",  # Set units for all layers
         f"--run.train_ratio={train_ratio}",
         "--run.save_each_ckpt=False",  # Disable intermediate checkpoints
@@ -105,11 +105,10 @@ def main():
             default=16,
             log=True,
         ),
-        deter_size=neps.Integer(
-            lower=64,
-            upper=1024,
-            default=1024,
-            log=True,
+        log_deter_size=neps.Integer(
+            lower=6,
+            upper=10,
+            default=10,
         ),
         hidden_size=neps.Integer(
             lower=32,
