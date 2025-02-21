@@ -716,7 +716,7 @@ DRQN_CONFIG_PATH = embodied.Path(__file__).parent / "configs" / "drqn.yaml"
 def main(argv=None):
     configs = yaml.safe_load(DRQN_CONFIG_PATH.read())
     # Load config
-    parsed, other = embodied.Flags(configs=["defaults", "mordorhike"]).parse_known(argv)
+    parsed, other = embodied.Flags(configs=["defaults"]).parse_known(argv)
     config = embodied.Config(configs["defaults"])
     for name in parsed.configs:
         config = config.update(configs[name])
