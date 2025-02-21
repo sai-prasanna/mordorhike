@@ -180,12 +180,11 @@ def collect_rollouts(
             if waypoints is not None:
                 episode_data["final_waypoint_step"] = np.array(final_waypoint_steps[worker])
                 episode_data["waypoints"] = waypoints
+                # Reset waypoint tracking for this worker
+                visited_waypoints[worker] = None
+                following_waypoints[worker] = True
+                final_waypoint_steps[worker] = None
             episodes_data.append(episode_data)
-            
-            # Reset waypoint tracking for this worker
-            visited_waypoints[worker] = None
-            following_waypoints[worker] = True
-            final_waypoint_steps[worker] = None
             current_episode.clear()
 
     control_carry = None
