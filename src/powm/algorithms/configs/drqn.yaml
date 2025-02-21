@@ -6,15 +6,15 @@ defaults:
   write_logs: True  # If True, enables all logging (jsonl, tensorboard, video, wandb). If False, only terminal output.
 
   train:
-    steps: 500000  # Total number of training steps
-    log_every: 10000  # Log metrics every N steps
+    steps: 5e5  # Total number of training steps
+    log_every: 1e4  # Log metrics every N steps
     learning_rate: 1e-3 # Learning rate for Adam optimizer
     batch_size: 32        # Batch size for training
-    buffer_capacity: 500000 # Maximum number of trajectories in replay buffer
+    buffer_capacity: 5e5 # Maximum number of trajectories in replay buffer
     train_every: 81       # Train after every N environment steps
     target_period: 810 # Update target every N steps
     num_gradient_steps: 10 # Number of gradient steps per training update
-    save_every: 50000   # Save checkpoint every N steps
+    save_every: 1e5   # Save checkpoint every N steps
     epsilon: 0.2         # Exploration rate
     gamma: 0.99          # Discount factor
 
