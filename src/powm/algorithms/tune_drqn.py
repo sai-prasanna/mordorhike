@@ -1,6 +1,5 @@
 import argparse
 import logging
-import time
 from functools import partial
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from powm.algorithms.rollout_drqn import collect_rollouts
 from powm.algorithms.train_drqn import main as train_main
 from powm.utils import set_seed
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size: int, hidden_size: int, num_layers: int, env_steps: int, train_every: int, target_update_mult: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
     
@@ -93,24 +92,24 @@ def main():
             lower=1e-5,
             upper=1e-2,
             log=True,
-            default=1e-3, 
+            prior=1e-3, 
         ),
         batch_size=neps.Integer(
             lower=32,
             upper=256,
-            default=32,
+            prior=32,
             log=True,
         ),
         hidden_size=neps.Integer(
             lower=32, 
             upper=512,
-            default=32,
+            prior=32,
             log=True,
         ),
         num_layers=neps.Integer(
             lower=1,
             upper=3,
-            default=2,
+            prior=2,
         ),
         env_steps=neps.Integer(
             lower=args.neps_env_steps_min,
@@ -119,36 +118,36 @@ def main():
         ),
         train_every=neps.Integer(
             lower=10,
-            default=10,
+            prior=10,
             upper=100,
         ),
         target_update_mult=neps.Integer(
             lower=5,
             upper=10,
-            default=10,
+            prior=10,
         ),
         epsilon=neps.Float(
             lower=0.1,
             upper=0.3,
-            default=0.2,
+            prior=0.2,
         ),
         num_gradient_steps=neps.Integer(
             lower=5,
             upper=30,
-            default=10,
+            prior=10,
         ),
     )
     # Run optimization
     neps.run(
-        run_pipeline=partial(evaluate_pipeline, training_args=training_args),
+        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args),
         pipeline_space=pipeline_space,
-        searcher="priorband",
+        optimizer=("priorband", {"eta": args.neps_eta}),
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
-        eta=args.neps_eta,
+        
     )
 if __name__ == "__main__":
     main()

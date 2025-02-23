@@ -200,7 +200,7 @@ class ReplayBuffer:
     """
 
     def __init__(self, capacity):
-        self.capacity = capacity
+        self.capacity = int(capacity)
         self.buffer = []
         self.last = 0
         self.count = 0

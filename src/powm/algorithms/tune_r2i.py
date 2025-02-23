@@ -99,47 +99,47 @@ def main():
             lower=1e-5,
             upper=1e-3,
             log=True,
-            default=1e-4,
+            prior=1e-4,
         ),
         actor_critic_lr=neps.Float(
             lower=1e-5,
             upper=1e-3,
             log=True,
-            default=3e-5,
+            prior=3e-5,
         ),
         batch_size=neps.Integer(
             lower=4,
             upper=32,
-            default=4,
+            prior=4,
             log=True,
         ),
         rssm_deter=neps.Integer(
             lower=256,
             upper=1024,
-            default=1024,
+            prior=1024,
             log=True,
         ),
         rssm_units=neps.Integer(
             lower=256,
             upper=1024,
-            default=1024,
+            prior=1024,
             log=True,
         ),
         units=neps.Integer(
             lower=256,
             upper=512,
-            default=512,
+            prior=512,
             log=True,
         ),
         mlp_layers=neps.Integer(
             lower=1,
             upper=3,
-            default=1,
+            prior=1,
         ),
         ssm_layers=neps.Integer(
             lower=3,
             upper=5,
-            default=3,
+            prior=3,
         ),
         env_steps=neps.Integer(
             lower=args.neps_env_steps_min,
@@ -149,22 +149,22 @@ def main():
         train_ratio=neps.Integer(
             lower=128,
             upper=1024,
-            default=512,
+            prior=512,
             log=True,
         ),
     )
     
     # Run optimization
     neps.run(
-        run_pipeline=partial(evaluate_pipeline, training_args=training_args),
+        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args),
         pipeline_space=pipeline_space,
-        searcher="priorband",
+        optimizer=("priorband", {"eta": args.neps_eta}),
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
-        eta=args.neps_eta,
+        
     )
 
 if __name__ == "__main__":

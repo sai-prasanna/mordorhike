@@ -97,35 +97,35 @@ def main():
             lower=1e-5,
             upper=1e-3,
             log=True,
-            default=4e-5,
+            prior=4e-5,
         ),
         batch_size=neps.Integer(
             lower=8,
             upper=128,
-            default=16,
+            prior=16,
             log=True,
         ),
         log_deter_size=neps.Integer(
             lower=6,
             upper=10,
-            default=10,
+            prior=10,
         ),
         hidden_size=neps.Integer(
             lower=32,
             upper=128,
-            default=128,
+            prior=128,
             log=True,
         ),
         classes=neps.Integer(
             lower=8,
             upper=32,
-            default=8,
+            prior=8,
             log=True,
         ),
         units=neps.Integer(
             lower=32,
             upper=256,
-            default=128,
+            prior=128,
             log=True,
         ),
         env_steps=neps.Integer(
@@ -136,22 +136,22 @@ def main():
         train_ratio=neps.Integer(
             lower=128,
             upper=1024,
-            default=512,
+            prior=512,
             log=True,
         ),
     )
     
     # Run optimization
     neps.run(
-        run_pipeline=partial(evaluate_pipeline, training_args=training_args),
+        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args),
         pipeline_space=pipeline_space,
-        searcher="priorband",
+        optimizer=("priorband", {"eta": args.neps_eta}),
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
-        eta=args.neps_eta,
+        
     )
 
 if __name__ == "__main__":

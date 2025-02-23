@@ -221,7 +221,7 @@ def main(argv=None):
         # Collect rollouts
         with torch.no_grad():
             # Collect regular and noisy episodes
-            episodes = collect_rollouts(
+            regular_episodes = collect_rollouts(
                 checkpoint_path=ckpt_path,
                 config=config,
                 num_episodes=parsed.collect_n_episodes,
@@ -253,7 +253,7 @@ def main(argv=None):
         # Save episode data
         np.savez(
             f"{parsed.logdir}/episodes_{step}.npz",
-            episodes=episodes,
+            episodes=regular_episodes,
             noisy_episodes=noisy_episodes,
             waypoint_episodes=waypoint_episodes
         )
