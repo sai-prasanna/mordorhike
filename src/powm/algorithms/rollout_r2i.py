@@ -68,15 +68,15 @@ def collect_rollouts(
             current_episode[key].append(tran[k])
         for k in env.act_space.keys():
             current_episode[k].append(tran[k])
-        current_episode["state"].append(info["state"])
-        current_episode["belief"].append(info["belief"])
+        if not collect_only_rewards:
+            current_episode["state"].append(info["state"])
+            current_episode["belief"].append(info["belief"])
+            # Store raw deter and stoch temporarily
+            latent_keys = ["deter", "stoch", "hidden", "logit", "control_deter", "control_stoch", "control_hidden"]
+            for k in latent_keys:
+                if k in tran.keys():
+                    current_episode[k].append(tran[k])
         
-        # Store raw deter and stoch temporarily
-        latent_keys = ["deter", "stoch", "hidden", "logit", "control_deter", "control_stoch", "control_hidden"]
-        for k in latent_keys:
-            if k in tran.keys():
-                current_episode[k].append(tran[k])
-    
         if tran["is_last"]:
             # Calculate episode statistics
             score = sum(current_episode["reward"])

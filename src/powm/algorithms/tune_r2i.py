@@ -15,8 +15,8 @@ from powm.utils import set_seed
 
 logging.basicConfig(level=logging.INFO)
 
-def evaluate_pipeline(pipeline_directory: Path, rssm_deter: int, 
-                     rssm_units: int, units: int, mlp_layers: int, ssm_layers: int, env_steps: int, 
+def evaluate_pipeline(pipeline_directory: Path, log_rssm_deter: int, 
+                     log_rssm_units: int, log_units: int, mlp_layers: int, ssm_layers: int, env_steps: int, 
                      train_ratio: int, wm_lr: float, actor_critic_lr: float, batch_size: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating R2I with multiple seeds."""
     seeds = [1337, 42, 13, 5, 94]  # Use 5 different seeds
@@ -24,6 +24,10 @@ def evaluate_pipeline(pipeline_directory: Path, rssm_deter: int,
     
     # Use the pipeline_directory provided by NEPS which contains a unique config ID
     base_logdir = embodied.Path(str(pipeline_directory))
+    
+    rssm_deter = 2 ** ( 8 + log_rssm_deter)
+    rssm_units = 2 ** ( 8 + log_rssm_units)
+    units = 2 ** ( 8 + log_units)
     
     # Get original command line arguments and append our hyperparameters
     hparam_args = [
@@ -113,23 +117,20 @@ def main():
             prior=4,
             log=True,
         ),
-        rssm_deter=neps.Integer(
-            lower=256,
-            upper=1024,
-            prior=1024,
-            log=True,
+        log_rssm_deter=neps.Integer(
+            lower=0,
+            upper=3,
+            prior=2,
         ),
-        rssm_units=neps.Integer(
-            lower=256,
-            upper=1024,
-            prior=1024,
-            log=True,
+        log_rssm_units=neps.Integer(
+            lower=0,
+            upper=3,
+            prior=2,
         ),
-        units=neps.Integer(
-            lower=256,
-            upper=512,
-            prior=512,
-            log=True,
+        log_units=neps.Integer(
+            lower=0,
+            upper=3,
+            prior=2,
         ),
         mlp_layers=neps.Integer(
             lower=1,
