@@ -124,12 +124,12 @@ def collect_rollouts(
                 current_episode["obs"].append(current_obs)
                 current_episode["action"].append(action)
                 if current_latent is not None:
-                    current_episode["latent"].append(current_latent.cpu().numpy())
-                    current_episode["control_latent"].append(control_current_latent.cpu().numpy())
+                    current_episode["latent"].append(current_latent[0].cpu().numpy())
+                    current_episode["control_latent"].append(control_current_latent[0].cpu().numpy())
                 else:
                     wm_dim = config.world_model.transformer_hidden_dim + 32*32
-                    current_episode["latent"].append(np.zeros((1, 1, wm_dim)))
-                    current_episode["control_latent"].append(np.zeros((1, 1, wm_dim)))
+                    current_episode["latent"].append(np.zeros((1, wm_dim)))
+                    current_episode["control_latent"].append(np.zeros((1, wm_dim)))
             
             obs, reward, terminated, truncated, info = vec_env.step(action)
             done = terminated or truncated
@@ -206,9 +206,9 @@ def collect_rollouts(
                     current_episode["latent"] = np.array(current_episode["latent"])[:, 0]
                     # timesteps x particles x belief_dim
                     current_episode["belief"] = np.array(current_episode["belief"])[:, 0]
-                    # remove batch dim, add particle dim as it is just 1 for STORM
-                    # Timesteps x particles x future_prediction_timesteps x obs_dim
-                    current_episode["obs_hat"] = np.array(imagined_trajectories)[0][:, np.newaxis, ...]
+                    # remove batch dim
+                    # Timesteps x future_prediction_timesteps x obs_dim
+                    current_episode["obs_hat"] = np.array(imagined_trajectories)[0]
                     current_episode["state"] = np.array(current_episode["state"])[:, 0]
                     current_episode["success"] = terminated[0]
                     

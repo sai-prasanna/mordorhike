@@ -108,8 +108,8 @@ def collect_rollouts(
             
             if not collect_only_rewards:
                 # Extract latent states
-                latent = hidden_states[0][:, 0].cpu().numpy().reshape(1, 1, -1)
-                control_latent = control_hidden_states[0][:, 0].cpu().numpy().reshape(1, 1, -1)
+                latent = hidden_states[0][:, 0].cpu().numpy().reshape(-1)
+                control_latent = control_hidden_states[0][:, 0].cpu().numpy().reshape(-1)
                 
                 episode["state"].append(infos["state"])
                 episode["belief"].append(infos["belief"])

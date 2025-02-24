@@ -2,11 +2,11 @@ import re
 from functools import partial as bind
 
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import ruamel.yaml as yaml
+from jax import lax
 
 from . import embodied, jaxagent, jaxutils, nets
 from . import ninjax as nj
@@ -105,32 +105,21 @@ class Agent(nj.Module):
     if self.config.replay_context:
       latdtype = jaxutils.COMPUTE_DTYPE
       latdtype = np.float32 if latdtype == jnp.bfloat16 else latdtype
-      spaces['deter'] = embodied.Space(latdtype, (self.config.n_particles, self.config.dyn.rssm.deter))
-      spaces['stoch'] = embodied.Space(np.int32, (self.config.n_particles, self.config.dyn.rssm.stoch))
+      spaces['deter'] = embodied.Space(latdtype, self.config.dyn.rssm.deter)
+      spaces['stoch'] = embodied.Space(np.int32, self.config.dyn.rssm.stoch)
     return spaces
 
   def init_policy(self, batch_size):
     prevact = {
         k: jnp.zeros((batch_size, *v.shape), v.dtype)
         for k, v in self.act_space.items()}
-    single_particle_lat = self.dyn.initial(batch_size)
-    prevlat = jax.tree_map(
-      lambda x: jnp.expand_dims(x, axis=1).repeat(
-        self.config.n_particles, axis=1), 
-        single_particle_lat)
-    return (prevlat, prevact)
+    return (self.dyn.initial(batch_size), prevact)
 
   def init_train(self, batch_size):
     prevact = {
         k: jnp.zeros((batch_size, *v.shape), v.dtype)
         for k, v in self.act_space.items()}
-    
-    single_particle_lat = self.dyn.initial(batch_size)
-    prevlat = jax.tree_map(
-      lambda x: jnp.expand_dims(x, axis=1).repeat(
-        self.config.n_particles, axis=1), 
-        single_particle_lat)
-    return (prevlat, prevact)
+    return (self.dyn.initial(batch_size), prevact)
 
   def init_report(self, batch_size):
     return self.init_train(batch_size)
@@ -138,53 +127,18 @@ class Agent(nj.Module):
   def policy(self, obs, carry, mode='train'):
     self.config.jax.jit and embodied.print(
         'Tracing policy function', color='yellow')
-    prevlats, prevact = carry
-    batch_size = obs['is_first'].shape[0]
+    prevlat, prevact = carry
     obs = self.preprocess(obs)
     embed = self.enc(obs, bdims=1)
     prevact = jaxutils.onehot_dict(prevact, self.act_space)
-    def filter_step(prevlat):
-      post_lat, post_out = self.dyn.observe(
-          prevlat, prevact, embed, obs['is_first'], 
-          bdims=1,
-          sample=(mode == "train" or self.config.n_particles > 1))
-      post_dist = self.dyn._dist(post_out['logit'])
-      if self.config.n_particles > 1:
-        # compute weights for each particle
-        post_proposal_likelihood = post_dist.log_prob(post_lat['stoch'])
-        _, prior_out = self.dyn.imagine(prevlat, prevact, bdims=1)
-        prior_dist = self.dyn._dist(prior_out['logit'])
-        dynamics_likelihood = prior_dist.log_prob(post_lat['stoch'])
-        dists = self.dec(post_out, bdims=1)
-        obs_likelihood = jnp.sum(jnp.array([v.log_prob(obs[k].astype(f32)) for k, v in dists.items()]), axis=0)
-        log_weight = obs_likelihood + dynamics_likelihood - post_proposal_likelihood
-        weight = jnp.exp(log_weight)
-      else:
-        weight = jnp.ones((batch_size,))
-      return post_lat, post_out, weight
-    
-    particle_lats, particle_outs, particle_weights = jax.vmap(filter_step, in_axes=1, out_axes=1)(prevlats)
-    if self.config.n_particles > 1:
-      # resample particles
-      particle_weights = particle_weights / jnp.sum(particle_weights, axis=1, keepdims=True)
-      particle_inds = jax.vmap(lambda x: jax.random.choice(nj.seed(), jnp.arange(self.config.n_particles), shape=(self.config.n_particles,), p=x))(particle_weights)
-      # Index particles for each batch element
-      batch_size = particle_inds.shape[0]
-      batch_indices = jnp.arange(batch_size)[:, None]
-      particle_outs = treemap(lambda v: v[batch_indices, particle_inds], particle_outs)
-      particle_lats = treemap(lambda v: v[batch_indices, particle_inds], particle_lats)
-      # randomly choose a particle to sample actions from
-      action_idx = jax.random.randint(nj.seed(), (batch_size,), 0, self.config.n_particles)
-    else:
-      action_idx = jnp.zeros((batch_size,), dtype=jnp.int32)
-    if self.config.particle_policy:
-      act = sample(self.actor(particle_outs, bdims=2, deepset_dim=1))
-    else:
-      particle_sample_out = treemap(lambda v: v[jnp.arange(batch_size), action_idx], particle_outs)
-      act = sample(self.actor(particle_sample_out, bdims=1))
+    lat, out = self.dyn.observe(
+        prevlat, prevact, embed, obs['is_first'], bdims=1)
+    actor = self.actor(out, bdims=1)
+    act = sample(actor)
+
     outs = {}
     if self.config.replay_context:
-      outs.update({k: particle_outs[k] for k in self.aux_spaces if k != 'stepid'})
+      outs.update({k: out[k] for k in self.aux_spaces if k != 'stepid'})
       outs['stoch'] = jnp.argmax(outs['stoch'], -1).astype(jnp.int32)
 
     outs['finite'] = {
@@ -193,19 +147,20 @@ class Agent(nj.Module):
             v.min(range(1, v.ndim)),
             v.max(range(1, v.ndim)))
         for k, v in jax.tree_util.tree_leaves_with_path(dict(
-            obs=obs, prevlat=prevlats, prevact=prevact,
-            embed=embed, act=act, out=particle_outs, lat=particle_lats,
+            obs=obs, prevlat=prevlat, prevact=prevact,
+            embed=embed, act=act, out=out, lat=lat,
         ))}
-      
+
     assert all(
         k in outs for k in self.aux_spaces
         if k not in ('stepid', 'finite', 'is_online')), (
               list(outs.keys()), self.aux_spaces)
+
     act = {
-      k: jnp.nanargmax(act[k], -1).astype(jnp.int32)
-      if s.discrete else act[k] for k, s in self.act_space.items()}
-    return act, outs, (particle_lats, act)
- 
+        k: jnp.nanargmax(act[k], -1).astype(jnp.int32)
+        if s.discrete else act[k] for k, s in self.act_space.items()}
+    return act, outs, (lat, act)
+
   def train(self, data, carry):
     self.config.jax.jit and embodied.print(
         'Tracing train function', color='yellow')
@@ -215,13 +170,13 @@ class Agent(nj.Module):
     if self.config.replay_context:
       K = self.config.replay_context
       data = data.copy()
-      # context = {k: data.pop(k)[:, :K] for k in self.aux_spaces if k in data}
       context = {
           k: data.pop(k)[:, :K] for k in self.aux_spaces if k != 'stepid'}
       context['stoch'] = f32(jax.nn.one_hot(
           context['stoch'], self.config.dyn.rssm.classes))
       prevlat = self.dyn.outs_to_carry(context)
-      carry = prevlat, carry[1]
+      prevact = {k: data[k][:, K - 1] for k in self.act_space}
+      carry = prevlat, prevact
       data = {k: v[:, K:] for k, v in data.items()}
       stepid = stepid[:, K:]
 
@@ -267,7 +222,7 @@ class Agent(nj.Module):
 
   def loss(self, data, carry, update=True):
     metrics = {}
-    p_prevlat, prevact = carry
+    prevlat, prevact = carry
 
     # Replay rollout
     prevacts = {
@@ -275,14 +230,7 @@ class Agent(nj.Module):
         for k in self.act_space}
     prevacts = jaxutils.onehot_dict(prevacts, self.act_space)
     embed = self.enc(data)
-    # prevlat is for multiple particles, so we need to map observe over the
-    p_newlat, p_outs = jax.vmap(lambda prevlat: self.dyn.observe(prevlat, prevacts, embed, data['is_first']), in_axes=1, out_axes=(1, 2))(p_prevlat)
-    # lat is batch x particle x ...
-    # outs is batch x time x particle x ...
-    # so we pick the first particle for both lat and outs
-    newlat = treemap(lambda x: x[:, 0, ...], p_newlat)
-    outs = treemap(lambda x: x[:, :, 0, ...], p_outs)
-
+    newlat, outs = self.dyn.observe(prevlat, prevacts, embed, data['is_first'])
     rew_feat = outs if self.config.reward_grad else sg(outs)
     dists = dict(
         **self.dec(outs),
@@ -296,56 +244,33 @@ class Agent(nj.Module):
     dynlosses, mets = self.dyn.loss(outs, **self.config.rssm_loss)
     losses.update(dynlosses)
     metrics.update(mets)
-    if self.config.particle_policy:
-      replay_outs = p_outs
-    else:
-      replay_outs = outs
+    replay_outs = outs
 
     # Imagination rollout
     def imgstep(carry, _):
       lat, act = carry
-      if self.config.particle_policy:
-        lat, out = jax.vmap(lambda p_lat: self.dyn.imagine(p_lat, act, bdims=1), in_axes=1, out_axes=1)(lat)
-        out['stoch'] = sg(out['stoch'])
-        act = cast(sample(self.actor(out, bdims=2, deepset_dim=1)))
-      else:
-        lat, out = self.dyn.imagine(lat, act, bdims=1)
-        out['stoch'] = sg(out['stoch'])
-        act = cast(sample(self.actor(out, bdims=1)))
+      lat, out = self.dyn.imagine(lat, act, bdims=1)
+      out['stoch'] = sg(out['stoch'])
+      act = cast(sample(self.actor(out, bdims=1)))
       return (lat, act), (out, act)
     rew = data['reward']
     con = 1 - f32(data['is_terminal'])
     if self.config.imag_start == 'all':
       B, T = data['is_first'].shape
-      if self.config.particle_policy:
-        intermediate = treemap(
-          lambda x: x.reshape((B * T, self.config.n_particles, 1, *x.shape[3:])), replay_outs)
-        startlat = jax.vmap(self.dyn.outs_to_carry, in_axes=1, out_axes=1)(intermediate)
-        startrew, startcon = treemap(
-            lambda x: x.reshape((B * T, *x.shape[3:])),
-            (rew, con))
-        startout = treemap(lambda x: x.reshape((B * T, self.config.n_particles, *x.shape[3:])), replay_outs)
-      else: 
-        startlat = self.dyn.outs_to_carry(treemap(
-            lambda x: x.reshape((B * T, 1, *x.shape[2:])), replay_outs))
-        startout, startrew, startcon = treemap(
-            lambda x: x.reshape((B * T, *x.shape[2:])),
-            (replay_outs, rew, con))
+      startlat = self.dyn.outs_to_carry(treemap(
+          lambda x: x.reshape((B * T, 1, *x.shape[2:])), replay_outs))
+      startout, startrew, startcon = treemap(
+          lambda x: x.reshape((B * T, *x.shape[2:])),
+          (replay_outs, rew, con))
     elif self.config.imag_start == 'last':
-      if self.config.particle_policy:
-        startlat = p_newlat
-      else:
-        startlat = newlat
+      startlat = newlat
       startout, startrew, startcon = treemap(
           lambda x: x[:, -1], (replay_outs, rew, con))
     if self.config.imag_repeat > 1:
       N = self.config.imag_repeat
       startlat, startout, startrew, startcon = treemap(
           lambda x: x.repeat(N, 0), (startlat, startout, startrew, startcon))
-    if self.config.particle_policy:
-      startact = cast(sample(self.actor(startout, bdims=2, deepset_dim=1)))
-    else:
-      startact = cast(sample(self.actor(startout, bdims=1)))
+    startact = cast(sample(self.actor(startout, bdims=1)))
     _, (outs, acts) = jaxutils.scan(
         imgstep, sg((startlat, startact)),
         jnp.arange(self.config.imag_length), self.config.imag_unroll)
@@ -355,26 +280,17 @@ class Agent(nj.Module):
         treemap(lambda x: x[:, None], (startout, startact)), (outs, acts))
 
     # Annotate
-    if self.config.particle_policy:
-      rew = jnp.concatenate([startrew[:, None], self.rew(outs, bdims=3).mean().mean(axis=-1)[:, 1:]], 1)
-      con = jnp.concatenate([startcon[:, None], self.con(outs, bdims=3).mean().mean(axis=-1)[:, 1:]], 1)
-    else:
-      rew = jnp.concatenate([startrew[:, None], self.rew(outs).mean()[:, 1:]], 1)
-      con = jnp.concatenate([startcon[:, None], self.con(outs).mean()[:, 1:]], 1)
+    rew = jnp.concatenate([startrew[:, None], self.rew(outs).mean()[:, 1:]], 1)
+    con = jnp.concatenate([startcon[:, None], self.con(outs).mean()[:, 1:]], 1)
     acts = sg(acts)
     inp = treemap({
         'none': lambda x: sg(x),
         'first': lambda x: jnp.concatenate([x[:, :1], sg(x[:, 1:])], 1),
         'all': lambda x: x,
     }[self.config.ac_grads], outs)
-    if self.config.particle_policy:
-      actor = self.actor(inp, bdims=3, deepset_dim=2)
-      critic = self.critic(inp, bdims=3, deepset_dim=2)
-      slowcritic = self.slowcritic(inp, bdims=3, deepset_dim=2)
-    else:
-      actor = self.actor(inp)
-      critic = self.critic(inp)
-      slowcritic = self.slowcritic(inp)
+    actor = self.actor(inp)
+    critic = self.critic(inp)
+    slowcritic = self.slowcritic(inp)
     voffset, vscale = self.valnorm.stats()
     val = critic.mean() * vscale + voffset
     slowval = slowcritic.mean() * vscale + voffset
@@ -411,14 +327,9 @@ class Agent(nj.Module):
         self.config.slowreg * critic.log_prob(sg(slowcritic.mean())))[:, :-1]
 
     if self.config.replay_critic_loss:
-      if self.config.particle_policy:
-        replay_critic = self.critic(
-          replay_outs if self.config.replay_critic_grad else sg(replay_outs), bdims=3, deepset_dim=2)
-        replay_slowcritic = self.slowcritic(replay_outs, bdims=3, deepset_dim=2)
-      else:
-        replay_critic = self.critic(
-            replay_outs if self.config.replay_critic_grad else sg(replay_outs))
-        replay_slowcritic = self.slowcritic(replay_outs)
+      replay_critic = self.critic(
+          replay_outs if self.config.replay_critic_grad else sg(replay_outs))
+      replay_slowcritic = self.slowcritic(replay_outs)
       boot = dict(
           imag=ret[:, 0].reshape(data['reward'].shape),
           critic=replay_critic.mean(),
@@ -480,9 +391,9 @@ class Agent(nj.Module):
     losses = {k: v * self.scales[k] for k, v in losses.items()}
     loss = jnp.stack([v.mean() for k, v in losses.items()]).sum()
     newact = {k: data[k][:, -1] for k in self.act_space}
-    outs = {'replay_outs': p_outs, 'prevacts': prevacts, 'embed': embed}
+    outs = {'replay_outs': replay_outs, 'prevacts': prevacts, 'embed': embed}
     outs.update({f'{k}_loss': v for k, v in losses.items()})
-    carry = (p_newlat, newact)
+    carry = (newlat, newact)
     return loss, (outs, carry, metrics)
 
   def report(self, data, carry):
@@ -492,20 +403,6 @@ class Agent(nj.Module):
       return {}, carry
     metrics = {}
     data = self.preprocess(data)
-    stepid = data.pop('stepid')
-
-    if self.config.replay_context:
-      K = self.config.replay_context
-      data = data.copy()
-      # context = {k: data.pop(k)[:, :K] for k in self.aux_spaces if k in data}
-      context = {
-          k: data.pop(k)[:, :K] for k in self.aux_spaces if k != 'stepid'}
-      context['stoch'] = f32(jax.nn.one_hot(
-          context['stoch'], self.config.dyn.rssm.classes))
-      prevlat = self.dyn.outs_to_carry(context)
-      carry = prevlat, carry[1]
-      data = {k: v[:, K:] for k, v in data.items()}
-      stepid = stepid[:, K:]
 
     # Train metrics
     _, (outs, carry_out, mets) = self.loss(data, carry, update=False)
@@ -516,10 +413,8 @@ class Agent(nj.Module):
     num_obs = min(self.config.report_openl_context, T // 2)
     # Rerun observe to get the correct intermediate state, because
     # outs_to_carry doesn't work with num_obs<context.
-
-    p_lat = treemap(lambda x: x[:, 0, ...], carry[0])
     img_start, rec_outs = self.dyn.observe(
-        p_lat,
+        carry[0],
         {k: v[:, :num_obs] for k, v in outs['prevacts'].items()},
         outs['embed'][:, :num_obs],
         data['is_first'][:, :num_obs])
@@ -586,8 +481,8 @@ class Agent(nj.Module):
     actions = jaxutils.onehot_dict(actions, self.act_space)
     
     def img_step_pred(carry, action):
-      new_carry = jax.vmap(lambda p_lat: self.dyn.imagine(p_lat, action, bdims=1)[0], in_axes=1, out_axes=1)(carry)
-      decoded_pred = {k: v.mode() for k, v in self.dec(new_carry).items()}
+      new_carry, _ = self.dyn.imagine(carry, action, bdims=1)
+      decoded_pred = {k: v.mode() for k, v in self.dec(new_carry, bdims=1).items()}
       return new_carry, decoded_pred
     
     def compute_step_predictions(step):
@@ -601,6 +496,7 @@ class Agent(nj.Module):
       return decoded_preds
     
     valid_steps = latents['deter'].shape[1] - prediction_horizon
+    
     predictions = jax.vmap(compute_step_predictions, out_axes=1)(
         jnp.arange(valid_steps))
 

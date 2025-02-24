@@ -111,8 +111,7 @@ def collect_rollouts(
                 num_keys = len(predictions)
                 for k, v in predictions.items():
                     key = f"obs_hat" if num_keys == 1 else f"pred_{k}"
-                    v = v.swapaxes(0, 1)  # Swap timestep and batch dimensions
-                    current_episode[key] = v
+                    current_episode[key] = v[0]
                     
                 # Create latents for storage
                 def create_latents(deter, stoch, hidden):
@@ -134,8 +133,8 @@ def collect_rollouts(
                 current_episode["action"] = np.argmax(current_episode["action"], axis=-1)
                 episode_data = {
                     **{k: np.array(v) for k, v in current_episode.items()},
-                    'latent': latents[:, np.newaxis, ...],
-                    'control_latent': control_latents[:, np.newaxis, ...],
+                    'latent': latents,
+                    'control_latent': control_latents,
                     "success": tran["is_terminal"]
                 }
                 # Add waypoint data if using waypoints
@@ -279,4 +278,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main("--logdir experiments/train_r2i_1".split())
+    main()

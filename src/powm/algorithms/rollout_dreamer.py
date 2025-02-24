@@ -143,9 +143,7 @@ def collect_rollouts(
             for k, v in predictions.items():
                 key = "obs_hat" if num_keys == 1 else f"obs_hat_{k}"
                 # Remove batch as it's 1
-                v = v[0] # Timestep * n_steps * particles * pred_dim
-                # swap particles and n_steps
-                v = v.swapaxes(1, 2) # Timestep * particles * n_steps * pred_dim
+                v = v[0] # Timestep * n_steps * pred_dim
                 current_episode[key] = v
 
             def convert_to_latent(deter, stoch):
@@ -268,8 +266,25 @@ def main(argv=None):
         fns = [bind(make_env, config, index=i, estimate_belief=True) for i in range(config.run.num_envs)]
         # disable parallel env creation as we need easy 
         # access to the envs for waypoint episode rollouts
-        driver = embodied.Driver(fns, False)
+        driver = embodied.Driver(fns, config.run.driver_parallel)
         
+        regular_episodes = collect_rollouts(
+            ckpt_path,
+            config,
+            driver,
+            parsed.collect_n_episodes, 
+            collect_only_rewards=False
+        )
+        noisy_episodes = collect_rollouts(
+            ckpt_path,
+            config,
+            driver,
+            parsed.collect_n_episodes,
+            epsilon=0.25,
+            collect_only_rewards=False
+        )
+        driver.close()
+        driver = embodied.Driver(fns, False)
         # Generate waypoints once and collect episodes in batches
         waypoint_rng = np.random.RandomState(42)
         waypoint_episodes = []
@@ -286,24 +301,6 @@ def main(argv=None):
                 waypoints=waypoints
             )
             waypoint_episodes.extend(episodes)
-        
-        noisy_episodes = collect_rollouts(
-            ckpt_path,
-            config,
-            driver,
-            parsed.collect_n_episodes,
-            epsilon=0.25,
-            collect_only_rewards=False
-        )
-        
-        regular_episodes = collect_rollouts(
-            ckpt_path,
-            config,
-            driver,
-            parsed.collect_n_episodes, 
-            collect_only_rewards=False
-        )
-        
         driver.close()
         
         ckpt_number = int(checkpoint.step)

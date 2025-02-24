@@ -175,19 +175,14 @@ def calculate_episodic_kldivs(episodes, pred, Y, device, criterion):
     return episode_kldivs, episodes
 
 def compute_prediction_metrics(episodes):
-    num_pred_steps = episodes[0]['obs_hat'].shape[2]
-    num_particles = episodes[0]['obs_hat'].shape[1]
-    assert num_particles == 1
+    num_pred_steps = episodes[0]['obs_hat'].shape[1]
     step_mses = [[] for _ in range(num_pred_steps)]
 
-    for episode in episodes:
-        num_timesteps = episode['obs'].shape[0]
-        
-        # For each prediction step (1 to max_pred_steps)
+    for episode in episodes:        
         for step in range(num_pred_steps):
             # Get predictions and true observations
-            preds = episode['obs_hat'][:num_timesteps-step, :, step, :]  # index 0 for first (only) particle
-            trues = episode['obs'][step:step+len(preds)][:, np.newaxis, :]
+            preds = episode['obs_hat'][:, step, :]
+            trues = episode['obs'][step+1:len(preds)+step+1][:, np.newaxis, :]
             
             # Calculate MSE for this episode at this prediction step
             mse = np.mean((preds - trues) ** 2)
@@ -224,7 +219,7 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
     if 'obs_hat' in episodes[0]:
         pred_metrics, step_mses = compute_prediction_metrics(episodes)
         metrics.update(pred_metrics)
-        avg_mses = np.mean(step_mses, axis=0)
+        avg_mses = np.mean(step_mses, axis=0) 
         score_pred_error_corr = pearsonr(scores, avg_mses)[0]
         metrics['score_pred_error_corr'] = score_pred_error_corr
     return metrics
