@@ -19,7 +19,7 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, log_deter_
                      hidden_size: int, classes: int, units: int, env_steps: int, 
                      train_ratio: int, batch_size: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating Dreamer with multiple seeds."""
-    seeds = [1337, 42, 13, 5, 94]  # Use 5 different seeds
+    seeds = [1337, 42, 13]  # Use 3 different seeds
     scores = []
     
     # Use the pipeline_directory provided by NEPS which contains a unique config ID
@@ -82,7 +82,7 @@ def main():
     parser = argparse.ArgumentParser()
     neps_group = parser.add_argument_group('neps')
     neps_group.add_argument("--neps_root_directory", type=str, required=True)
-    neps_group.add_argument("--neps_max_evaluations_total", type=int, default=50)
+    neps_group.add_argument("--neps_max_evaluations_total", type=int, default=100)
     neps_group.add_argument("--neps_max_evaluations_per_run", type=int, default=1)
     neps_group.add_argument("--neps_env_steps_min", type=int, default=100000)
     neps_group.add_argument("--neps_env_steps_max", type=int, default=500000)
@@ -101,7 +101,7 @@ def main():
         ),
         batch_size=neps.Integer(
             lower=8,
-            upper=128,
+            upper=32,
             prior=16,
             log=True,
         ),
@@ -143,16 +143,16 @@ def main():
     
     # Run optimization
     neps.run(
-        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args),
+        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args, env_steps=args.neps_env_steps_max),
         pipeline_space=pipeline_space,
-        optimizer=("priorband", {"eta": args.neps_eta}),
+        optimizer=("random_search", {"use_priors": True}),
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
-        
+        ignore_errors=True
     )
 
 if __name__ == "__main__":
-    main() 
+    main()

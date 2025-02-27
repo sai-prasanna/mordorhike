@@ -19,7 +19,7 @@ def evaluate_pipeline(pipeline_directory: Path, log_rssm_deter: int,
                      log_rssm_units: int, log_units: int, mlp_layers: int, ssm_layers: int, env_steps: int, 
                      train_ratio: int, wm_lr: float, actor_critic_lr: float, batch_size: int, training_args: list[str]) -> float:
     """Evaluate a configuration by training and evaluating R2I with multiple seeds."""
-    seeds = [1337, 42, 13, 5, 94]  # Use 5 different seeds
+    seeds = [1337, 42, 13]  # Use 3 different seeds
     scores = []
     
     # Use the pipeline_directory provided by NEPS which contains a unique config ID
@@ -88,7 +88,7 @@ def main():
     parser = argparse.ArgumentParser()
     neps_group = parser.add_argument_group('neps')
     neps_group.add_argument("--neps_root_directory", type=str, required=True)
-    neps_group.add_argument("--neps_max_evaluations_total", type=int, default=50)
+    neps_group.add_argument("--neps_max_evaluations_total", type=int, default=100)
     neps_group.add_argument("--neps_max_evaluations_per_run", type=int, default=1)
     neps_group.add_argument("--neps_env_steps_min", type=int, default=100000)
     neps_group.add_argument("--neps_env_steps_max", type=int, default=500000)
@@ -119,17 +119,17 @@ def main():
         ),
         log_rssm_deter=neps.Integer(
             lower=0,
-            upper=3,
+            upper=2,
             prior=2,
         ),
         log_rssm_units=neps.Integer(
             lower=0,
-            upper=3,
+            upper=2,
             prior=2,
         ),
         log_units=neps.Integer(
             lower=0,
-            upper=3,
+            upper=2,
             prior=2,
         ),
         mlp_layers=neps.Integer(
@@ -138,8 +138,8 @@ def main():
             prior=1,
         ),
         ssm_layers=neps.Integer(
-            lower=3,
-            upper=5,
+            lower=2,
+            upper=4,
             prior=3,
         ),
         env_steps=neps.Integer(
@@ -157,16 +157,17 @@ def main():
     
     # Run optimization
     neps.run(
-        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args),
+        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args, env_steps=args.neps_env_steps_max),
         pipeline_space=pipeline_space,
-        optimizer=("priorband", {"eta": args.neps_eta}),
+        optimizer=("random_search", {"use_priors": True}),
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
-        
+        ignore_errors=True
     )
+
 
 if __name__ == "__main__":
     main() 

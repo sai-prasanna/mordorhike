@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.DEBUG)
 def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size: int, hidden_size: int, num_layers: int, env_steps: int, train_every: int, target_update_mult: int, epsilon: float, num_gradient_steps: int, training_args: list[str]) -> float:
     
     """Evaluate a configuration by training and evaluating DRQN with multiple seeds."""
-    seeds = [1337, 42, 13, 5, 94]  # Use 5 different seeds
+    seeds = [1337, 42, 13]  # Use 3 different seeds
     scores = []
     
     # Use the pipeline_directory provided by NEPS which contains a unique config ID
@@ -78,7 +78,7 @@ def main():
     parser = argparse.ArgumentParser()
     neps_group = parser.add_argument_group('neps')
     neps_group.add_argument("--neps_root_directory", type=str, required=True, help="Root directory for optimization results")
-    neps_group.add_argument("--neps_max_evaluations_total", type=int, default=50, help="Number of configurations to evaluate")
+    neps_group.add_argument("--neps_max_evaluations_total", type=int, default=100, help="Number of configurations to evaluate")
     neps_group.add_argument("--neps_max_evaluations_per_run", type=int, default=1, help="Number of configurations to evaluate per run")
     # env steps budget
     neps_group.add_argument("--neps_env_steps_min", type=int, default=100000, help="Minimum number of environment steps to evaluate for a configuration")
@@ -139,15 +139,15 @@ def main():
     )
     # Run optimization
     neps.run(
-        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args),
+        evaluate_pipeline=partial(evaluate_pipeline, training_args=training_args, env_steps=args.neps_env_steps_max),
         pipeline_space=pipeline_space,
-        optimizer=("priorband", {"eta": args.neps_eta}),
+        optimizer=("random_search", {"use_priors": True}),
         root_directory=args.neps_root_directory,
         max_evaluations_total=args.neps_max_evaluations_total,
         max_evaluations_per_run=args.neps_max_evaluations_per_run,
         overwrite_working_directory=False,
         post_run_summary=True,
-        
+        ignore_errors=True
     )
 if __name__ == "__main__":
     main()
