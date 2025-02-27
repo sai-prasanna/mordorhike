@@ -6,9 +6,11 @@ from pathlib import Path
 import neps
 import numpy as np
 import ruamel.yaml as yaml
+import torch
 from dreamerv3 import embodied
 
 from powm.algorithms.rollout_drqn import collect_rollouts
+from powm.algorithms.train_drqn import DRQN, build_env
 from powm.algorithms.train_drqn import main as train_main
 from powm.utils import set_seed
 
@@ -56,16 +58,35 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, batch_size
         config = embodied.Config.load(config_path)
         checkpoint_path = logdir / "checkpoint.ckpt"
         
+        # Create environment to get action and observation sizes
+        env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
+        env = build_env(config.env.name, env_kwargs, config.seed)
+        
+        # Create agent once
+        agent = DRQN(
+            action_size=env.action_space.n,
+            observation_size=env.observation_space.shape[0],
+            hidden_size=config.drqn.hidden_size,
+            num_layers=config.drqn.num_layers,
+            device=config.device,
+        )
+        
+        # Load checkpoint
+        checkpoint = torch.load(str(checkpoint_path), weights_only=False)
+        agent.load_state_dict(checkpoint["agent"])
+        
         # Evaluate the trained agent
         rollout_data = collect_rollouts(
-            checkpoint_path=checkpoint_path,
+            agent=agent,
             config=config,
             num_episodes=100,
             epsilon=0.0,
             collect_only_rewards=True,
         )
         scores.append(np.mean([sum(ep["reward"]) for ep in rollout_data]))
-        # delete the logdir to save space
+        
+        # Close environment and delete the logdir to save space
+        env.close()
         logdir.rmtree()
 
     # Return negative mean return across seeds (NEPS minimizes)

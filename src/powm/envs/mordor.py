@@ -649,25 +649,32 @@ class MordorHike(gym.Env):
             else:
                 return 1, visited  # Backward
 
-    def generate_random_waypoints(self, n_waypoints, rng):
+    def generate_random_waypoints(self, n_waypoints, rng, final_waypoint_at_center=True):
         """Generate random waypoints within the map bounds.
         
         Args:
             n_waypoints: Number of waypoints to generate
             rng: Random number generator instance
+            final_waypoint_at_center: If True, makes the last waypoint at map center
             
         Returns:
             Array of shape (n_waypoints, 2) containing waypoint positions
         """
+        # Calculate map center
+        map_center = (self.map_upper_bound + self.map_lower_bound) / 2
+        
         # Generate initial random points
         waypoints = []
         # Minimum distance between waypoints and waypoint from goal
         min_dist = self.translate_step * 10  
         goal = self.goal_position
         
+        # Adjust target number of waypoints if we're adding center point
+        target_waypoints = n_waypoints - 1 if final_waypoint_at_center else n_waypoints
+        
         # Keep trying until we have enough valid waypoints
         attempts = 0
-        while len(waypoints) < n_waypoints and attempts < 1000:
+        while len(waypoints) < target_waypoints and attempts < 1000:
             # Generate random point in [-1, 1] range
             point = rng.uniform(self.map_lower_bound, self.map_upper_bound, 2)
             
@@ -682,12 +689,23 @@ class MordorHike(gym.Env):
                     attempts += 1
                     continue
                     
+            # If this is the second-to-last point and we're adding center point,
+            # ensure it's not too close to center
+            if final_waypoint_at_center and len(waypoints) == target_waypoints - 1:
+                if np.linalg.norm(point - map_center) < min_dist:
+                    attempts += 1
+                    continue
+                
             waypoints.append(point)
             attempts += 1
-            
-        if len(waypoints) < n_waypoints:
+        
+        if len(waypoints) < target_waypoints:
             warnings.warn(f"Could only generate {len(waypoints)} waypoints")
-            
+        
+        # Add center point if requested
+        if final_waypoint_at_center:
+            waypoints.append(map_center)
+        
         return np.array(waypoints)
 
 def main():
@@ -735,7 +753,7 @@ def main():
                     update_smooth_factor=0.1,
                 )
             elif key == ord("v"):
-                action, visited = env.get_waypoint_action(waypoints, visited)
+                action, visited = env.get_waypoint_action(waypoints, env.state, visited)
                 if action is None:
                     print("All waypoints visited or current waypoint reached")
                     action = 0

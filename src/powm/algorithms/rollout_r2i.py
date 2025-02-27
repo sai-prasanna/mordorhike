@@ -10,33 +10,32 @@ from powm.utils import set_seed
 
 
 def collect_rollouts(
-    checkpoint_path: str | None,
     config,
     env,
     num_episodes: int,
     epsilon: float = 0.0,
     collect_only_rewards: bool = False,
     waypoints: list = None,
+    agent = None,
+    control_agent = None,
 ):
     """Collect rollouts from a R2I agent.
     
     Args:
-        checkpoint_path: Path to checkpoint to load, or None for random agent
         config: Configuration object
         env: Environment to run in
         num_episodes: Number of episodes to collect
         epsilon: Exploration rate
         collect_only_rewards: If True, only collect rewards
         waypoints: If provided, list of waypoints to follow
+        agent: Pre-created agent to use (if None, will create a new one)
+        control_agent: Pre-created control agent to use (if None, will create a new one)
     """
-    # Create agent
-    agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
-    control_agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
-
-    checkpoint = embodied.Checkpoint()
-    checkpoint.step = embodied.Counter()
-    checkpoint.agent = agent
-    checkpoint.load(checkpoint_path, keys=['agent', 'step'])
+    # Create agent if not provided
+    if agent is None:
+        agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
+    if control_agent is None:
+        control_agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
 
     episodes_data = []
     worker_episodes = defaultdict(lambda: defaultdict(list))
@@ -50,10 +49,10 @@ def collect_rollouts(
     # Initialize waypoint tracking
     visited_waypoints = [None] * len(driver._env)
     following_waypoints = [True] * len(driver._env) if waypoints is not None else None
-    final_waypoint_steps = [None] * len(driver._env)
+    waypoints_steps = [[] for _ in range(len(driver._env))]
 
     def log_step(tran, worker):
-        nonlocal waypoints, visited_waypoints, following_waypoints, final_waypoint_steps
+        nonlocal waypoints, visited_waypoints, following_waypoints, waypoints_steps
         current_episode = worker_episodes[worker]
         # Always collect rewards for score calculation
         current_episode["reward"].append(tran["reward"])
@@ -139,7 +138,7 @@ def collect_rollouts(
                 }
                 # Add waypoint data if using waypoints
                 if waypoints is not None:
-                    episode_data["final_waypoint_step"] = np.array(final_waypoint_steps[worker])
+                    episode_data["waypoints_step"] = np.array(waypoints_steps[worker])
                     episode_data["waypoints"] = waypoints
 
                 episodes_data.append(episode_data)
@@ -148,12 +147,12 @@ def collect_rollouts(
             visited_waypoints[worker] = None
             if following_waypoints is not None:
                 following_waypoints[worker] = True
-            final_waypoint_steps[worker] = None
+            waypoints_steps[worker] = []
             current_episode.clear()
 
     control_state = None
     def policy(obs, state, **kwargs):
-        nonlocal control_state, visited_waypoints, following_waypoints, final_waypoint_steps
+        nonlocal control_state, visited_waypoints, following_waypoints, waypoints_steps
         if state and 'control_deter' in state[0][0].keys():
             del state[0][0]['control_deter']
             del state[0][0]['control_stoch']
@@ -176,10 +175,9 @@ def collect_rollouts(
                         acts['action'][i] = one_hot_waypoint_action
                     else:
                         following_waypoints[i] = False
-                        # Record the step when we finished visiting all waypoints
-                        if final_waypoint_steps[i] is None:
-                            final_waypoint_steps[i] = gym_env.step_count
-            
+                    
+                    if len(waypoints_steps[i]) < len(visited_waypoints[i]):
+                        waypoints_steps[i].append(gym_env.step_count)
             (prev_latent, _), task_state, expl_state = state
             state = (prev_latent, acts['action']), task_state, expl_state
 
@@ -227,21 +225,34 @@ def main(argv=None):
 
     # Create environment and agent
     env = make_envs(config, estimate_belief=True)
+    
+    # Create agents once
+    agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
+    control_agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
+    
     step = embodied.Counter()
     for ckpt_path in sorted(ckpt_paths, key=lambda x: int(x.stem.split("_")[-1])):
+        # Load checkpoint
+        checkpoint = embodied.Checkpoint()
+        checkpoint.step = step
+        checkpoint.agent = agent
+        checkpoint.load(ckpt_path, keys=['agent', 'step'])
+        
         # Collect regular and noisy episodes
         regular_episodes = collect_rollouts(
-            ckpt_path,
-            config,
-            env,
-            parsed.collect_n_episodes,
+            config=config,
+            env=env,
+            num_episodes=parsed.collect_n_episodes,
+            agent=agent,
+            control_agent=control_agent
         )
         noisy_episodes = collect_rollouts(
-            ckpt_path,
-            config,
-            env,
-            parsed.collect_n_episodes,
-            epsilon=0.25
+            config=config,
+            env=env,
+            num_episodes=parsed.collect_n_episodes,
+            epsilon=0.25,
+            agent=agent,
+            control_agent=control_agent
         )
         # Generate waypoints and collect episodes in batches
         waypoint_rng = np.random.RandomState(4)
@@ -257,12 +268,13 @@ def main(argv=None):
                 parsed.collect_n_episodes - len(waypoint_episodes)
             )
             episodes = collect_rollouts(
-                ckpt_path,
-                config,
-                env,
-                num_episodes,
+                config=config,
+                env=env,
+                num_episodes=num_episodes,
                 collect_only_rewards=False,
-                waypoints=waypoints
+                waypoints=waypoints,
+                agent=agent,
+                control_agent=control_agent
             )
             waypoint_episodes.extend(episodes)
         # Save episode data

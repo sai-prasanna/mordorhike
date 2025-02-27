@@ -212,8 +212,8 @@ def compute_overall_metrics(episodes, discount_factor=0.99):
         'length_mean': np.mean(episode_lengths),
         'length_std': np.std(episode_lengths),
     }
-    if 'waypoint' in episodes[0]:
-        waypoint_scores = [episode['reward'][:episode['waypoint_step']].sum() for episode in episodes]
+    if 'waypoints' in episodes[0]:
+        waypoint_scores = [episode['reward'][:episode['waypoints_step'][-1]].sum() for episode in episodes]
         metrics['after_waypoints_score_mean'] = np.mean(waypoint_scores)
         metrics['after_waypoints_score_std'] = np.std(waypoint_scores)
     if 'obs_hat' in episodes[0]:

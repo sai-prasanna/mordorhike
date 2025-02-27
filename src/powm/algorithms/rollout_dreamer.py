@@ -14,35 +14,35 @@ from powm.utils import set_seed
 
 
 def collect_rollouts(
-    checkpoint_path: str | None,
     config,
     driver: embodied.Driver,
     num_episodes: int,
     epsilon: float = 0.0,
     collect_only_rewards: bool = False,
     waypoints: list = None,
+    agent = None,
+    control_agent = None,
 ):
     """Collect rollouts from a Dreamer agent.
     
     Args:
-        checkpoint_path: Path to checkpoint to load, or None for random agent
         config: Configuration object
         driver: Driver for environment interaction
         num_episodes: Number of episodes to collect
         epsilon: Exploration rate
         collect_only_rewards: If True, only collect rewards
         waypoints: If provided, list of waypoints to follow
+        agent: Pre-created agent to use (if None, will create a new one)
+        control_agent: Pre-created control agent to use (if None, will create a new one)
     """
-    # Create agent
-    env = make_env(config, index=0)
-    agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
-    control_agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
-    env.close()
-
-    if checkpoint_path is not None:
-        checkpoint = embodied.Checkpoint()
-        checkpoint.agent = agent
-        checkpoint.load(checkpoint_path, keys=['agent'])
+    # Create agent if not provided
+    if agent is None or control_agent is None:
+        env = make_env(config, index=0)
+        if agent is None:
+            agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+        if control_agent is None:
+            control_agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+        env.close()
 
     episodes_data = []
     current_episodes = {i: defaultdict(list) for i in range(driver.length)}
@@ -56,8 +56,7 @@ def collect_rollouts(
     # Initialize waypoint tracking
     visited_waypoints = [None] * driver.length
     following_waypoints = [True] * driver.length if waypoints is not None else None
-    waypoint_env = make_env(config, index=0) if waypoints is not None else None
-    final_waypoint_steps = [None] * driver.length  # Track when final waypoint was reached
+    waypoints_steps = [[] for _ in range(driver.length)]
 
     def log_step(tran, worker):
         nonlocal waypoints
@@ -176,21 +175,20 @@ def collect_rollouts(
                 "success": tran["is_terminal"],
             }
             if waypoints is not None:
-                episode_data["final_waypoint_step"] = np.array(final_waypoint_steps[worker])
+                episode_data["waypoints_step"] = np.array(waypoints_steps[worker])
                 episode_data["waypoints"] = waypoints
                 # Reset waypoint tracking for this worker
                 visited_waypoints[worker] = None
                 following_waypoints[worker] = True
-                final_waypoint_steps[worker] = None
+                waypoints_steps[worker] = []
             episodes_data.append(episode_data)
             current_episode.clear()
 
     control_carry = None
-    waypoint_env = None
     
     
     def policy(obs, carry, **kwargs):
-        nonlocal control_carry, visited_waypoints, following_waypoints, waypoint_env, final_waypoint_steps
+        nonlocal control_carry, visited_waypoints, following_waypoints, waypoints_steps
         
         if control_carry is None:
             control_carry = carry
@@ -208,9 +206,8 @@ def collect_rollouts(
                         acts['action'][i] = waypoint_action
                     else:
                         following_waypoints[i] = False
-                        # Record the step when we finished visiting all waypoints
-                        if final_waypoint_steps[i] is None:
-                            final_waypoint_steps[i] = driver.envs[i]._env.unwrapped.step_count
+                    if len(waypoints_steps[i]) < len(visited_waypoints[i]):
+                        waypoints_steps[i].append(driver.envs[i]._env.unwrapped.step_count)
                     latent, _ = carry
                     carry = (latent, agent._split(jax.device_put(acts, agent.policy_sharded)))
         if epsilon != 0.0:
@@ -253,55 +250,64 @@ def main(argv=None):
     # Set seeds
     set_seed(config.seed)
     
-    # Create the environment once
+    # Create the agents once
     env = make_env(config, index=0)
     agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+    control_agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
     env.close()
 
     checkpoint = embodied.Checkpoint()
     checkpoint.agent = agent
     checkpoint.step = embodied.Counter()
     for ckpt_path in sorted(ckpt_paths, key=lambda x: int(x.stem.split("_")[-1])):
+        # Load checkpoint
         checkpoint.load(ckpt_path, keys=["agent", "step"])
-        fns = [bind(make_env, config, index=i, estimate_belief=True) for i in range(config.run.num_envs)]
-        # disable parallel env creation as we need easy 
-        # access to the envs for waypoint episode rollouts
-        driver = embodied.Driver(fns, config.run.driver_parallel)
         
-        regular_episodes = collect_rollouts(
-            ckpt_path,
-            config,
-            driver,
-            parsed.collect_n_episodes, 
-            collect_only_rewards=False
-        )
-        noisy_episodes = collect_rollouts(
-            ckpt_path,
-            config,
-            driver,
-            parsed.collect_n_episodes,
-            epsilon=0.25,
-            collect_only_rewards=False
-        )
-        driver.close()
-        driver = embodied.Driver(fns, False)
+        fns = [bind(make_env, config, index=i, estimate_belief=True) for i in range(config.run.num_envs)]
+        driver = embodied.Driver(fns[:4], False)
         # Generate waypoints once and collect episodes in batches
         waypoint_rng = np.random.RandomState(42)
         waypoint_episodes = []
         
         while len(waypoint_episodes) < parsed.collect_n_episodes:
+            print(f"Collecting {len(waypoint_episodes)} waypoint episodes")
             waypoints = driver.envs[0]._env.unwrapped.generate_random_waypoints(parsed.num_waypoints, rng=waypoint_rng)
             num_episodes = min(parsed.episodes_per_waypoint, parsed.collect_n_episodes - len(waypoint_episodes))
             episodes = collect_rollouts(
-                ckpt_path,
-                config,
-                driver,
-                num_episodes,
+                config=config,
+                driver=driver,
+                num_episodes=num_episodes,
                 collect_only_rewards=False,
-                waypoints=waypoints
+                waypoints=waypoints,
+                agent=agent,
+                control_agent=control_agent
             )
             waypoint_episodes.extend(episodes)
         driver.close()
+        
+        print(f"Collecting {parsed.collect_n_episodes} regular episodes")
+        # access to the envs for waypoint episode rollouts
+        driver = embodied.Driver(fns, config.run.driver_parallel)
+        
+        regular_episodes = collect_rollouts(
+            config=config,
+            driver=driver,
+            num_episodes=parsed.collect_n_episodes, 
+            collect_only_rewards=False,
+            agent=agent,
+            control_agent=control_agent
+        )
+        noisy_episodes = collect_rollouts(
+            config=config,
+            driver=driver,
+            num_episodes=parsed.collect_n_episodes,
+            epsilon=0.25,
+            collect_only_rewards=False,
+            agent=agent,
+            control_agent=control_agent
+        )
+        driver.close()
+        
         
         ckpt_number = int(checkpoint.step)
         np.savez(

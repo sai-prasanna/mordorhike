@@ -1,11 +1,13 @@
 import argparse
 import logging
+import shutil
 import time
 from functools import partial
 from pathlib import Path
 
 import neps
 import numpy as np
+import recall2imagine
 from recall2imagine import embodied
 from recall2imagine.train import make_env, make_envs
 
@@ -48,6 +50,7 @@ def evaluate_pipeline(pipeline_directory: Path, log_rssm_deter: int,
         "--wandb.project=",  # Disable wandb logging
         "--write_logs=False",  # Disable full logging during tuning
         "--configs=mordorhike",  # Use mordorhike config
+        "--jax.prealloc=False",
     ]
     
     for seed in seeds:
@@ -67,18 +70,35 @@ def evaluate_pipeline(pipeline_directory: Path, log_rssm_deter: int,
         config = embodied.Config.load(logdir / "config.yaml")
         env = make_envs(config)
         
+        # Create agent once
+        agent = recall2imagine.Agent(env.obs_space, env.act_space, embodied.Counter(), config)
+        
+        # Load checkpoint
+        checkpoint = embodied.Checkpoint()
+        checkpoint.step = embodied.Counter()
+        checkpoint.agent = agent
+        checkpoint.load(logdir / "checkpoint.ckpt", keys=['agent', 'step'])
+        
         rollout_data = collect_rollouts(
-            checkpoint_path=logdir / "checkpoint.ckpt",
             config=config,
             env=env,
             num_episodes=100,
             epsilon=0.0,
             collect_only_rewards=True,
+            agent=agent
         )
         scores.append(np.mean([sum(ep["reward"]) for ep in rollout_data]))
         
         env.close()
-        logdir.rmtree()
+        try:
+            logdir.rmtree()
+        except OSError as e:
+            # Retry with force option or ignore if directory doesn't exist
+            import shutil
+            try:
+                shutil.rmtree(str(logdir), ignore_errors=True)
+            except Exception as e:
+                print(f"Warning: Could not remove directory {logdir}: {e}")
 
     # Return negative mean return across seeds (NEPS minimizes)
     return -np.mean(scores)

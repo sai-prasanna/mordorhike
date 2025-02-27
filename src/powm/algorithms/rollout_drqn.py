@@ -12,22 +12,24 @@ from powm.utils import set_seed
 
 
 def collect_rollouts(
-    checkpoint_path: str | None,
+    agent: DRQN,
     config,
     num_episodes: int,
     epsilon: float = 0.0,
     collect_only_rewards: bool = False,
     waypoints: list = None,
+    control_agent = None,
 ):
     """Collect rollouts from an agent.
     
     Args:
-        checkpoint_path: Path to checkpoint to load, or None for random agent
         config: Configuration object
         num_episodes: Number of episodes to collect
         epsilon: Exploration rate
         collect_only_rewards: If True, only collect rewards
         waypoints: If provided, list of waypoints to follow
+        agent: Pre-created agent to use (if None, will create a new one)
+        control_agent: Pre-created control agent to use (if None, will create a new one)
         
     Returns:
         List of episode data dictionaries
@@ -37,31 +39,7 @@ def collect_rollouts(
     if not collect_only_rewards:
         env_kwargs["estimate_belief"] = True
     env = build_env(config.env.name, env_kwargs, config.seed)
-    
-    # Setup agent
-    agent = DRQN(
-        action_size=env.action_space.n,
-        observation_size=env.observation_space.shape[0],
-        hidden_size=config.drqn.hidden_size,
-        num_layers=config.drqn.num_layers,
-        device=config.device,
-    )
-    if checkpoint_path is not None:
-        checkpoint = torch.load(str(checkpoint_path), weights_only=False)
-        agent.load_state_dict(checkpoint["agent"])
     agent = agent.eval()
-    
-    # Setup control agent if needed
-    control_agent = None
-    if not collect_only_rewards:
-        control_agent = DRQN(
-            action_size=env.action_space.n,
-            observation_size=env.observation_space.shape[0],
-            hidden_size=config.drqn.hidden_size,
-            num_layers=config.drqn.num_layers,
-            device=config.device,
-        )
-        control_agent = control_agent.eval()
     
     episode_data = []
     rolled_out_episodes = 0
@@ -82,7 +60,7 @@ def collect_rollouts(
         # Reset waypoint tracking for new episode
         visited = None
         following_waypoints = waypoints is not None
-        final_waypoint_step = None
+        waypoints_steps = []
         
         while not (terminated or truncated):
             tau_t = trajectory.get_last_observed().view(1, 1, -1).to(agent.device)
@@ -95,9 +73,10 @@ def collect_rollouts(
             # Get action based on current policy mode
             if following_waypoints:
                 a, visited = env.unwrapped.get_waypoint_action(waypoints, visited)
+                if visited is not None and len(waypoints_steps) < len(visited):
+                    waypoints_steps.append(env.unwrapped.step_count)
                 if a is None:  # Current waypoint reached or all waypoints visited
                     following_waypoints = False
-                    final_waypoint_step = len(episode["reward"])
             
             if a is None:
                 # Use agent policy
@@ -135,7 +114,7 @@ def collect_rollouts(
                     episode["belief"] = np.array(episode["belief"])
                     episode["success"] = np.array(terminated)
                     if waypoints is not None:
-                        episode["final_waypoint_step"] = np.array(final_waypoint_step)
+                        episode["waypoints_step"] = np.array(waypoints_steps)
                         episode["waypoints"] = waypoints
                 episode_data.append(episode)
                 rolled_out_episodes += 1
@@ -183,10 +162,10 @@ def eval_checkpoint(checkpoint_path: str | None, config, num_episodes: int, epsi
     # Collect evaluation episodes
     episodes = collect_rollouts(
         agent,
-        control_agent,
         config,
         num_episodes=num_episodes,
-        epsilon=epsilon
+        epsilon=epsilon,
+        control_agent=control_agent
     )
     
     # Calculate returns
@@ -214,23 +193,45 @@ def main(argv=None):
     env_kwargs = yaml.YAML(typ='safe').load(config.env.kwargs) or {}
     env = build_env(config.env.name, env_kwargs, config.seed)
     
+    # Create agents once
+    agent = DRQN(
+        action_size=env.action_space.n,
+        observation_size=env.observation_space.shape[0],
+        hidden_size=config.drqn.hidden_size,
+        num_layers=config.drqn.num_layers,
+        device=config.device,
+    )
+    control_agent = DRQN(
+        action_size=env.action_space.n,
+        observation_size=env.observation_space.shape[0],
+        hidden_size=config.drqn.hidden_size,
+        num_layers=config.drqn.num_layers,
+        device=config.device,
+    )
+    
     ckpt_paths = sorted([f for f in logdir.glob("checkpoint_*.ckpt")])
     for ckpt_path in ckpt_paths:
         step = int(ckpt_path.stem.split("_")[-1])
+        
+        # Load checkpoint
+        checkpoint = torch.load(str(ckpt_path), weights_only=False)
+        agent.load_state_dict(checkpoint["agent"])
 
         # Collect rollouts
         with torch.no_grad():
             # Collect regular and noisy episodes
             regular_episodes = collect_rollouts(
-                checkpoint_path=ckpt_path,
+                agent=agent,
                 config=config,
                 num_episodes=parsed.collect_n_episodes,
+                control_agent=control_agent
             )
             noisy_episodes = collect_rollouts(
-                checkpoint_path=ckpt_path,
+                agent=agent,
                 config=config,
                 num_episodes=parsed.collect_n_episodes,
                 epsilon=0.25,
+                control_agent=control_agent
             )
             # Collect waypoint episodes in batches
             waypoint_rng = np.random.RandomState(42)
@@ -241,10 +242,11 @@ def main(argv=None):
                 waypoints = env.unwrapped.generate_random_waypoints(parsed.num_waypoints, rng=waypoint_rng)
                 num_episodes = min(parsed.episodes_per_waypoint, parsed.collect_n_episodes - episodes_collected)
                 episodes = collect_rollouts(
-                    checkpoint_path=ckpt_path,
+                    agent=agent,
                     config=config,
                     num_episodes=num_episodes,
                     waypoints=waypoints,
+                    control_agent=control_agent
                 )
                 waypoint_episodes.extend(episodes)
                 episodes_collected += len(episodes)

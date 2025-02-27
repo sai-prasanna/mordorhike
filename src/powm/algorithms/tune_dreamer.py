@@ -4,6 +4,8 @@ import time
 from functools import partial
 from pathlib import Path
 
+import dreamerv3
+import jax
 import neps
 import numpy as np
 from dreamerv3 import embodied
@@ -56,23 +58,32 @@ def evaluate_pipeline(pipeline_directory: Path, learning_rate: float, log_deter_
         
         # Evaluate the trained agent
         config = embodied.Config.load(logdir / "config.yaml")
-        env = make_env(config, 0)
         driver = embodied.Driver([partial(make_env, config, i) for i in range(config.run.num_envs)])
         
+        # Create agent once
+        env = make_env(config, index=0)
+        agent = dreamerv3.Agent(env.obs_space, env.act_space, config)
+        env.close()
+        
+        # Load checkpoint
+        checkpoint = embodied.Checkpoint()
+        checkpoint.agent = agent
+        checkpoint.load(logdir / "checkpoint.ckpt", keys=['agent'])
+        
         rollout_data = collect_rollouts(
-            checkpoint_path=logdir / "checkpoint.ckpt",
             config=config,
             driver=driver,
             num_episodes=100,
             epsilon=0.0,
             collect_only_rewards=True,
+            agent=agent
         )
         scores.append(np.mean([sum(ep["reward"]) for ep in rollout_data]))
         
         # Clean up
         driver.close()
-        env.close()
         logdir.rmtree()
+        jax.clear_caches()
 
     # Return negative mean return across seeds (NEPS minimizes)
     return -np.mean(scores)
