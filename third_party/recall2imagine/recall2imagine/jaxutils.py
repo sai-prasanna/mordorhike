@@ -1,12 +1,12 @@
 import re
-from operator import or_, add
+from operator import add, or_
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from flax.core import FrozenDict, freeze
 from tensorflow_probability.substrates import jax as tfp
-from flax.core import freeze, FrozenDict
 
 from . import ninjax as nj
 
@@ -419,7 +419,7 @@ class Optimizer(nj.Module):
       if cfgopt['lateclip']:
         chain.append(late_grad_clip(cfgopt['lateclip']))
       if cfgopt['wd']:
-        chain.append(optax.additive_weight_decay(cfgopt['wd'], lambda params: (
+        chain.append(optax.add_decayed_weights(cfgopt['wd'], lambda params: (
             tree_map(lambda k: bool(cfgopt['wd_pattern'].search(k)), tree_keys(params)))))
       if cfgopt['warmup']:
         schedule = optax.linear_schedule(0.0, -cfgopt['lr'], cfgopt['warmup'])
