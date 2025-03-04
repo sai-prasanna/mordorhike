@@ -48,7 +48,7 @@ def make_logger(config, metric_dir=""):
                         ),
                         config=dict(config),
                         resume=True,
-                        dir=logdir,
+                        dir=str(logdir),
                     )
                 ),
             )

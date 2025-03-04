@@ -89,7 +89,7 @@ def make_logger(logdir, step, config, metric_dir=None):
                         ),
                         config=dict(config),
                         resume=True,
-                        dir=logdir,
+                        dir=str(logdir),
                     )
                 ),
             )
