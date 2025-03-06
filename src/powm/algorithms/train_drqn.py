@@ -695,7 +695,7 @@ def make_logger(logdir: embodied.Path, config):
                     group=config.wandb.group or logdir.parent.name,
                     name=config.wandb.name or logdir.name,
                     config=dict(config),
-                    dir=logdir,
+                    dir=str(logdir),
                 )
             ))
     
