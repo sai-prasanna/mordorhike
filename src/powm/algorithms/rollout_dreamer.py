@@ -206,7 +206,7 @@ def collect_rollouts(
                         acts['action'][i] = waypoint_action
                     else:
                         following_waypoints[i] = False
-                    if len(waypoints_steps[i]) < len(visited_waypoints[i]):
+                    if len(waypoints_steps[i]) < sum(visited_waypoints[i]):
                         waypoints_steps[i].append(driver.envs[i]._env.unwrapped.step_count)
                     latent, _ = carry
                     carry = (latent, agent._split(jax.device_put(acts, agent.policy_sharded)))

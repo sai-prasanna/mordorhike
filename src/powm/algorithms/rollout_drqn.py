@@ -73,7 +73,7 @@ def collect_rollouts(
             # Get action based on current policy mode
             if following_waypoints:
                 a, visited = env.unwrapped.get_waypoint_action(waypoints, visited)
-                if visited is not None and len(waypoints_steps) < len(visited):
+                if visited is not None and len(waypoints_steps) < sum(visited):
                     waypoints_steps.append(env.unwrapped.step_count)
                 if a is None:  # Current waypoint reached or all waypoints visited
                     following_waypoints = False

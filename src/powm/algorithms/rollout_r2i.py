@@ -176,7 +176,7 @@ def collect_rollouts(
                     else:
                         following_waypoints[i] = False
                     
-                    if len(waypoints_steps[i]) < len(visited_waypoints[i]):
+                    if len(waypoints_steps[i]) < sum(visited_waypoints[i]):
                         waypoints_steps[i].append(gym_env.step_count)
             (prev_latent, _), task_state, expl_state = state
             state = (prev_latent, acts['action']), task_state, expl_state
