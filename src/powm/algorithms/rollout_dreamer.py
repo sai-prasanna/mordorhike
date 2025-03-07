@@ -142,8 +142,10 @@ def collect_rollouts(
             for k, v in predictions.items():
                 key = "obs_hat" if num_keys == 1 else f"obs_hat_{k}"
                 # Remove batch as it's 1
-                v = v[0] # Timestep * n_steps * pred_dim
-                current_episode[key] = v
+                v = v[0] # Timestep * n_steps * particles * pred_dim
+                # swap particles and n_steps
+                v = v.swapaxes(1, 2) # Timestep * particles * n_steps * pred_dim
+                current_episode[key] = v[:, 0, :]
 
             def convert_to_latent(deter, stoch):
                 stoch_one_hot = np.eye(config.dyn.rssm.classes)[stoch]
