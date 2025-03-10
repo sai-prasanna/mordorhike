@@ -1,5 +1,6 @@
 import gymnasium as gym
 from gymnasium.envs.registration import WrapperSpec
+
 from powm.envs.mordor import MordorHike
 
 gym.register(
@@ -13,7 +14,7 @@ gym.register(
         ),
     ),
 )
-for difficulty in ["easy", "medium", "hard", "veryhard"]:
+for difficulty in ["easy", "medium", "hard"]:
     gym.register(
         f"mordor-hike-{difficulty}-v0",
         entry_point=getattr(MordorHike, difficulty),
