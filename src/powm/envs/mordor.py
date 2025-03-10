@@ -322,7 +322,7 @@ class MordorHike(gym.Env):
         self.particles = self.particles[indices]
 
     def _get_belief(self):
-        return self.particles
+        return self.particles.copy()
 
     def render(self):
         if self.render_mode is None:
