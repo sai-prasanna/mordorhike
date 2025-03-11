@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from dreamerv3 import embodied
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 from torch.utils.data import DataLoader, TensorDataset
 
 from powm.algorithms.train_dreamer import make_logger
@@ -33,7 +33,9 @@ def preprocess_episodes(episodes, env):
     for episode in episodes:
         episode["discrete_belief"] = []
         for step in range(len(episode["belief"])):
+            # Sum over angles when discretizing
             discretized_belief = env.discretize_belief(episode["belief"][step])
+            discretized_belief = discretized_belief.sum(axis=-1)  # Sum over angle dimension
             episode["discrete_belief"].append(discretized_belief)
             latent = episode["latent"][step]
             control_latent = episode["control_latent"][step]
@@ -41,6 +43,7 @@ def preprocess_episodes(episodes, env):
             X.append(latent.reshape(-1))
             Y.append(discretized_belief.reshape(-1))
         episode["discrete_belief"] = np.array(episode["discrete_belief"])
+        # shuffle Y within the episode to get Y_control
     return np.array(X), np.array(X_rand), np.array(Y)
 
 def train_belief_predictor(train_X, train_Y, val_X, val_Y, device):
@@ -56,7 +59,7 @@ def train_belief_predictor(train_X, train_Y, val_X, val_Y, device):
     best_model = None
     best_val_loss = float('inf')
     
-    for epoch in range(100):
+    for epoch in range(300):
         model.train()
         for batch_x, batch_y in loader:
             optimizer.zero_grad()
@@ -75,15 +78,17 @@ def train_belief_predictor(train_X, train_Y, val_X, val_Y, device):
             best_model = copy.deepcopy(model.state_dict())
             
     model.load_state_dict(best_model)
-    return model
+    torch.cuda.empty_cache()
+    
+    return model.eval()
 
 def visualize_trajectory_step(env, episode, step_idx):
     """
     Visualize a single step showing true and predicted belief distributions side by side
     """
     # Get true and predicted belief grids
-    true_grid = episode['discrete_belief'][step_idx].sum(-1)
-    pred_grid = episode['predicted_belief'][step_idx].sum(-1)
+    true_grid = episode['discrete_belief'][step_idx]
+    pred_grid = episode['predicted_belief'][step_idx]
 
     # Normalize grids to 0-255 range
     true_grid = (((true_grid - true_grid.min()) / (true_grid.max() - true_grid.min())) * 255).astype(np.uint8)
@@ -239,7 +244,8 @@ def main(argv=None):
     config = embodied.Flags(config).parse(other)
     set_seed(config.seed)
     
-    # Setup environment and device
+    # the difficulty doesnot matter for the purposes of this script
+    # TODO: use config to create the environment
     env = MordorHike.medium(render_mode="human", estimate_belief=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -251,35 +257,35 @@ def main(argv=None):
         logdir.glob("episodes_*.npz"), 
         key=lambda x: int(x.stem.split("_")[-1])
     )
+    in_distribution_scores = []
+    in_distribution_kldivs = []
+    waypoint_scores = []
+    waypoint_kldivs = []
+    noisy_scores = []
+    noisy_kldivs = []
     
     for episode_path in episode_paths:
         ckpt_number = int(episode_path.stem.split("_")[-1])
         logger.step.load(ckpt_number)  # Set logger step to checkpoint number
-        
         # Load episodes
         rollouts = np.load(
             logdir / f"episodes_{ckpt_number}.npz", 
             allow_pickle=True
         )
-        for key in ["episodes", "noisy_episodes", "waypoint_episodes"]:
+        for key in ["episodes","noisy_episodes", "waypoint_episodes"]:
+            
             episodes = rollouts[key]
-        
-            # Split episodes
             n_episodes = len(episodes)
-            # using equal number of train, test, eval as the 
-            # kldiv metric is sensitive
             train_idx = int(n_episodes / 3)
-            val_idx = 2 * train_idx
-
-            train_episodes = episodes[:train_idx]
-            val_episodes = episodes[train_idx:val_idx]
-            test_episodes = episodes[val_idx:]
+            val_idx = 2 * train_idx            
+            train_episodes = list(episodes[:train_idx])
+            val_episodes =  list(episodes[train_idx:val_idx])
+            test_episodes = list(episodes[val_idx:])
 
             # Preprocess data
             train_X, train_X_control, train_Y = preprocess_episodes(train_episodes, env)
             val_X, val_X_control, val_Y = preprocess_episodes(val_episodes, env)
             test_X, test_X_control, test_Y = preprocess_episodes(test_episodes, env)
-            # Train predictor
             probe = train_belief_predictor(
                 train_X, train_Y, 
                 val_X, val_Y,
@@ -290,17 +296,11 @@ def main(argv=None):
                 val_X_control, val_Y,
                 device
             )
-
-            # Evaluate and log metrics
-            overall_metrics = compute_overall_metrics(episodes)
-            probe.eval()
-            criterion = nn.KLDivLoss(reduction='batchmean')
-
             # Calculate episode KL divergences for all sets
             test_pred = probe(torch.FloatTensor(test_X).to(device))
             val_pred = probe(torch.FloatTensor(val_X).to(device))
             train_pred = probe(torch.FloatTensor(train_X).to(device))
-            
+            criterion = nn.KLDivLoss(reduction='batchmean')
             # Calculate episode KL divergences of the control probe
             control_test_pred = control_probe(torch.FloatTensor(test_X_control).to(device))
             control_test_episode_kldivs, _ = calculate_episodic_kldivs(
@@ -311,40 +311,32 @@ def main(argv=None):
                 val_episodes, val_pred, val_Y, device, criterion)
             train_episode_kldivs, _ = calculate_episodic_kldivs(
                 train_episodes, train_pred, train_Y, device, criterion)
-
+            overall_metrics = compute_overall_metrics(episodes)
             diff_episode_kldivs = np.array(control_test_episode_kldivs) - np.array(test_episode_kldivs)
-
-            # Calculate test scores for correlation
             test_scores = [episode['reward'].sum() for episode in test_episodes]
-
-            # Calculate correlation between episode KL divergence and scores (test set only)
-            score_kldiv_correlation = pearsonr(test_scores, test_episode_kldivs)[0]
-            test_stepwise_kldiv_all = nn.KLDivLoss(reduction='none')(test_pred, torch.FloatTensor(test_Y).to(device)).sum(-1).detach().cpu().numpy()
-            control_test_stepwise_kldiv_all = nn.KLDivLoss(reduction='none')(control_test_pred, torch.FloatTensor(test_Y).to(device)).sum(-1).detach().cpu().numpy()
-            test_stepwise_kldiv = np.mean(test_stepwise_kldiv_all)
-            control_test_stepwise_kldiv = np.mean(control_test_stepwise_kldiv_all)
-            kl_diff_all = control_test_stepwise_kldiv - test_stepwise_kldiv
-            kl_diff = np.mean(kl_diff_all)
+            if key == "episodes":
+                in_distribution_scores.extend(test_scores)
+                in_distribution_kldivs.extend(test_episode_kldivs)
+            elif key == "noisy_episodes":
+                noisy_scores.extend(test_scores)
+                noisy_kldivs.extend(test_episode_kldivs)
+            elif key == "waypoint_episodes":
+                waypoint_scores.extend(test_scores)
+                waypoint_kldivs.extend(test_episode_kldivs)
             
+            score_kldiv_corr = pearsonr(test_scores, test_episode_kldivs)[0]
+            score_kldiv_corr_spearman = spearmanr(test_scores, test_episode_kldivs)[0]
             overall_metrics.update({
-                'test_stepwise_kldiv': test_stepwise_kldiv,
-                'val_stepwise_kldiv': criterion(val_pred, torch.FloatTensor(val_Y).to(device)).cpu().item(),
-                'train_stepwise_kldiv': criterion(train_pred, torch.FloatTensor(train_Y).to(device)).cpu().item(),
-                'control_test_stepwise_kldiv': control_test_stepwise_kldiv,
-                'test_stepwise_kldiv_diff': kl_diff,
-                'test_episodic_kldiv': np.mean(test_episode_kldivs),
-                'test_episodic_kldiv_std': np.std(test_episode_kldivs),
+                'episodic_kldiv': np.mean(test_episode_kldivs),
                 'train_episodic_kldiv': np.mean(train_episode_kldivs),
-                'train_episodic_kldiv_std': np.std(train_episode_kldivs),
-                'test_score_episodic_kldiv_corr': score_kldiv_correlation,
-                'control_test_episodic_kldiv': np.mean(control_test_episode_kldivs),
-                'control_test_episodic_kldiv_std': np.std(control_test_episode_kldivs),
-                'test_episodic_kldiv_diff': np.mean(diff_episode_kldivs),
-                'episodic_kldiv_diff_std': np.std(diff_episode_kldivs),
+                "val_episodic_kldiv": np.mean(val_episode_kldivs),
+                'score_episodic_kldiv_corr_pearson': score_kldiv_corr,
+                'score_episodic_kldiv_corr_spearman': score_kldiv_corr_spearman,
+                'control_episodic_kldiv': np.mean(control_test_episode_kldivs),
+                'episodic_kldiv_diff': np.mean(diff_episode_kldivs),
             })
             logger.add(overall_metrics, prefix=key)
             visualize_episodes = np.random.choice(test_episodes, 10, replace=False)
-            
             for i, episode in enumerate(visualize_episodes):
                 frames = []
                 for step_idx in range(len(episode['state'])):
@@ -355,6 +347,28 @@ def main(argv=None):
                     f"eval_video/{i}": frames
                 }, prefix=key)
             logger.write()
+
+    score_kldiv_corr = pearsonr(in_distribution_scores, in_distribution_kldivs)[0]
+    score_kldiv_corr_spearman = spearmanr(in_distribution_scores, in_distribution_kldivs)[0]
+    waypoint_score_kldiv_corr = pearsonr(waypoint_scores, waypoint_kldivs)[0]
+    waypoint_score_kldiv_corr_spearman = spearmanr(waypoint_scores, waypoint_kldivs)[0]
+    noisy_score_kldiv_corr = pearsonr(noisy_scores, noisy_kldivs)[0]
+    noisy_score_kldiv_corr_spearman = spearmanr(noisy_scores, noisy_kldivs)[0]
+    
+    overall_scores = in_distribution_scores + waypoint_scores + noisy_scores
+    overall_kldivs = in_distribution_kldivs + waypoint_kldivs + noisy_kldivs
+    overall_score_kldiv_corr = pearsonr(overall_scores, overall_kldivs)[0]
+    overall_score_kldiv_corr_spearman = spearmanr(overall_scores, overall_kldivs)[0]
+    logger.add({
+        'in_dist_score_kldiv_corr_pearson': score_kldiv_corr,
+        'in_dist_score_kldiv_corr_spearman': score_kldiv_corr_spearman,
+        'waypoint_score_kldiv_corr_pearson': waypoint_score_kldiv_corr,
+        'waypoint_score_kldiv_corr_spearman': waypoint_score_kldiv_corr_spearman,
+        'noisy_score_kldiv_corr_pearson': noisy_score_kldiv_corr,
+        'noisy_score_kldiv_corr_spearman': noisy_score_kldiv_corr_spearman,
+        'overall_score_kldiv_corr_pearson': overall_score_kldiv_corr,
+        'overall_score_kldiv_corr_spearman': overall_score_kldiv_corr_spearman,
+    }, prefix="overall")
     logger.close()
 
 
