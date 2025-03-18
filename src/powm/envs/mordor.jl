@@ -272,14 +272,6 @@ end
 function MordorHikePOMDP(::Val{:hard}; kwargs...)
     return MordorHikePOMDP(;
         occlude_dims=(1, 2),
-        start_distribution="uniform",
-        kwargs...
-    )
-end
-
-function MordorHikePOMDP(::Val{:veryhard}; kwargs...)
-    return MordorHikePOMDP(;
-        occlude_dims=(1, 2),
         start_distribution="rotation",
         lateral_action=rotate,
         kwargs...
@@ -842,7 +834,7 @@ end
 
 #play_interactive()
 
-pomdp = MordorHikePOMDP(Val(:easy))
+# pomdp = MordorHikePOMDP(Val(:easy))
 # Run a few Rollout policy and display paths
 # println("\nRunning Rollout value iteration  policy demonstrations...")
 #rollout_policy = GridValuePolicy(pomdp, 20, 4, 5000)
@@ -901,58 +893,102 @@ pomdp = MordorHikePOMDP(Val(:easy))
 
 
 
-# Define solvers
-policy = Dict(
-    # "POMCPOW (Random - deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=20), pomdp),
-    #"POMCPOW (Random)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0)), pomdp),
-    "POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 20, 20))), pomdp),
-    # "POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 20, 4))), pomdp),
-    # "POMCPOW (Q Learning 200k)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(QValuePolicy(pomdp, 20, 4, n_episodes=200000))), pomdp),
-    # "POMCPOW (Q Learning 10k)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(QValuePolicy(pomdp, 20, 4, n_episodes=10000))), pomdp),
-    "POMCPOW (GoToGoalPolicy)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
-    # "POMCPOW (GoToGoalPolicy) deeper" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GoToGoalPolicy(pomdp)), tree_queries=10000, max_depth=20), pomdp),
+# # Define solvers
+# policy = Dict(
+#     # "POMCPOW (Random - deeper)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=20), pomdp),
+#     #"POMCPOW (Random)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0)), pomdp),
+#     #"POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 20, 20))), pomdp),
+#     # "POMCPOW (Value Iteration)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 20, 4))), pomdp),
+#     # "POMCPOW (Q Learning 200k)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(QValuePolicy(pomdp, 20, 4, n_episodes=200000))), pomdp),
+#     # "POMCPOW (Q Learning 10k)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(QValuePolicy(pomdp, 20, 4, n_episodes=10000))), pomdp),
+#     "POMCPOW (GoToGoalPolicy)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
+#     # "POMCPOW (GoToGoalPolicy) deeper" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GoToGoalPolicy(pomdp)), tree_queries=10000, max_depth=20), pomdp),
 
-    # "POMCPOW (Q Learning)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(QValuePolicy(pomdp, 20, 4))), pomdp),
-    # "POMCPOW (A*)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 100))), pomdp),
-    # "Value Iteration - Tree" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100)), tree_queries=10000,max_depth=10), pomdp),
+#     # "POMCPOW (Q Learning)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(QValuePolicy(pomdp, 20, 4))), pomdp),
+#     # "POMCPOW (A*)" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(AStarRolloutPolicy(pomdp, 100))), pomdp),
+#     # "Value Iteration - Tree" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GridValuePolicy(pomdp, 100)), tree_queries=10000,max_depth=10), pomdp),
 
-    #"POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
-    #"POMCPOW - GoToGoalPolicy" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10, estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
-    #"Random" => RandomPolicy(pomdp)
-)
+#     #"POMCPOW" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10), pomdp),
+#     #"POMCPOW - GoToGoalPolicy" => solve(POMCPOWSolver(criterion=MaxUCB(20.0), tree_queries=10000, max_depth=10, estimate_value=FORollout(GoToGoalPolicy(pomdp))), pomdp),
+#     #"Random" => RandomPolicy(pomdp)
+# )
 
-# Simulate
-hr = HistoryRecorder(max_steps=get_horizon(pomdp))
+# # Simulate
+# hr = HistoryRecorder(max_steps=get_horizon(pomdp))
 
-# Run experiments for each solver
-for (policy_name, planner) in policy
+# # Run experiments for each solver
+# for (policy_name, planner) in policy
     
-    println("\n$policy_name Policy")
+#     println("\n$policy_name Policy")
+#     returns = []
+#     scores = []
+#     lengths = []
+#     success = []
+#     for i in 1:20
+#         hist = simulate(hr, pomdp, planner) 
+#         push!(returns, discounted_reward(hist))
+#         push!(scores, sum(h.r for h in hist))
+#         push!(lengths, length(hist))
+#         push!(success, isterminal(pomdp, hist[end].sp) ? 1.0 : 0.0)
+#         println("Return: $(returns[i]), Score: $(scores[i]), Length: $(lengths[i]), Success: $(success[i])")
+#         # display the path
+#         path = [h.s[1:2] for h in hist]
+#         last_state = hist[end].sp
+#         display(render(pomdp, last_state, path=path))
+#         sleep(1.0)
+#     end
+
+#     println(""" $policy_name Policy
+#         Mean and std of returns: $(mean(returns)), $(std(returns))
+#         Mean and std of scores: $(mean(scores)), $(std(scores))
+#         Mean and std of lengths: $(mean(lengths)), $(std(lengths))
+#         Mean and std of success: $(mean(success)), $(std(success))
+#         """)
+# end
+
+
+
+for env in ["hard"]
+    pomdp = MordorHikePOMDP(Val(Symbol(env)))
+    planner = solve(POMCPOWSolver(criterion=MaxUCB(20.0), estimate_value=FORollout(GoToGoalPolicy(pomdp)), tree_queries=10000, max_depth=20), pomdp)
+    hr = HistoryRecorder(max_steps=get_horizon(pomdp))
     returns = []
     scores = []
     lengths = []
     success = []
-    for i in 1:20
-        hist = simulate(hr, pomdp, planner) 
+    for i in 1:100
+        hist = simulate(hr, pomdp, planner)
         push!(returns, discounted_reward(hist))
         push!(scores, sum(h.r for h in hist))
         push!(lengths, length(hist))
         push!(success, isterminal(pomdp, hist[end].sp) ? 1.0 : 0.0)
-        println("Return: $(returns[i]), Score: $(scores[i]), Length: $(lengths[i]), Success: $(success[i])")
-        # display the path
-        path = [h.s[1:2] for h in hist]
-        last_state = hist[end].sp
-        display(render(pomdp, last_state, path=path))
-        sleep(1.0)
     end
-
-    println(""" $policy_name Policy
+    println(""" $env Policy
         Mean and std of returns: $(mean(returns)), $(std(returns))
         Mean and std of scores: $(mean(scores)), $(std(scores))
         Mean and std of lengths: $(mean(lengths)), $(std(lengths))
         Mean and std of success: $(mean(success)), $(std(success))
         """)
 end
+
+
+# easy GoToGoalPolicy
+# Mean and std of returns: -14.600141790691154, 3.4644671875692836
+# Mean and std of scores: -16.71766735653837, 4.113663264443515
+# Mean and std of lengths: 32.81, 4.532029669948435
+# Mean and std of success: 1.0, 0.0
+
+# medium GoToGoalPolicy
+# Mean and std of returns: -28.902097775802563, 9.992617357107454
+# Mean and std of scores: -36.7621767237318, 15.467834915453812
+# Mean and std of lengths: 54.13, 17.05348390011006
+# Mean and std of success: 1.0, 0.0
+
+# Hard GoToGoalPolicy
+# Mean and std of returns: -41.84750751003509, 13.788138734154067
+# Mean and std of scores: -62.50454640921984, 28.473405358373444
+# Mean and std of lengths: 87.18, 35.981864118671574
+# Mean and std of success: 0.95, 0.21904291355759042
 
 # POMCPOW (A*) Policy
 # Mean and std of returns: -35.16663408716645, 10.068539402802525

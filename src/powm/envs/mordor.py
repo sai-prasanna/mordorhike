@@ -387,16 +387,16 @@ class MordorHike(gym.Env):
                 pos = tuple(map(int, self._world_to_pixel(particle[:2])))
                 if 0 <= pos[0] < img.shape[1] and 0 <= pos[1] < img.shape[0]:
                     # Calculate angle difference with true state
-                    angle_diff = abs((particle[2] - self.state[2] + np.pi) % (2*np.pi) - np.pi)
-                    angle_match = angle_diff < np.pi/6  # Within 30 degrees
+                    #angle_diff = abs((particle[2] - self.state[2] + np.pi) % (2*np.pi) - np.pi)
+                    #angle_match = angle_diff < np.pi/6  # Within 30 degrees
                     
                     # Set alpha based on local density
                     alpha = min(1.0, density_map[pos[1], pos[0]] * 0.8 + 0.2)
                     
                     # Draw circle and direction with different colors based on angle match
-                    color = (0, 255, 0) if angle_match else (0, 165, 255)  # Green if angle matches, orange if not
+                    color = (0, 165, 255)
                     overlay = img.copy()
-                    cv2.circle(overlay, pos, int(2), color, 1)
+                    cv2.circle(overlay, pos, int(2), color, scale_factor * 2)
                     
                     direction = (
                         int(4 * scale_factor * np.cos(particle[2])),
@@ -407,20 +407,20 @@ class MordorHike(gym.Env):
                         pos,
                         (pos[0] + direction[0], pos[1] + direction[1]),
                         color,
-                        1,
+                        scale_factor,
                     )
                     
                     # Apply alpha blending
                     cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
         # Draw actual position and direction
         pos = tuple(map(int, self._world_to_pixel(self.state[:2])))
-        cv2.circle(img, pos, int(5 * scale_factor), (0, 0, 255), -1)
+        cv2.circle(img, pos, int(4 * scale_factor), (0, 0, 255), -1)
         direction = (
             int(7 * scale_factor * np.cos(self.state[2])),
             int(-7 * scale_factor * np.sin(self.state[2])),
         )
         cv2.line(
-            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), 2
+            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), scale_factor * 2
         )
 
         if self.render_mode == "rgb_array":
@@ -436,6 +436,9 @@ class MordorHike(gym.Env):
         X, Y = np.meshgrid(x, y)
         positions = np.stack([X, Y], axis=-1)
         Z = self._altitude(positions.reshape(-1, 2)).reshape(height, width)
+        # Set terminal region to zero altitude
+        terminal_mask = self._terminal(positions.reshape(-1, 2)).reshape(height, width)
+        Z[terminal_mask] = 0
 
         # Normalize Z to 0-255 range
         Z_norm = ((Z - Z.min()) / (Z.max() - Z.min()) * 255).astype(np.uint8)
@@ -727,7 +730,7 @@ def main():
     Allows to play with the MordorHike environment using keyboard controls.
     """
     env = MordorHike.hard(
-        render_mode="human", lateral_action="strafe", estimate_belief=True
+        render_mode="human", estimate_belief=True, num_particles=1000, render_size=(600, 600)
     )
     obs, _ = env.reset(seed=2)
 
@@ -767,7 +770,7 @@ def main():
                     update_smooth_factor=0.1,
                 )
             elif key == ord("v"):
-                action, visited = env.get_waypoint_action(waypoints, env.state, visited)
+                action, visited = env.get_waypoint_action(waypoints, visited)
                 if action is None:
                     print("All waypoints visited or current waypoint reached")
                     action = 0
