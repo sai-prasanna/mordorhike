@@ -35,7 +35,6 @@ def preprocess_episodes(episodes, env):
         for step in range(len(episode["belief"])):
             # Sum over angles when discretizing
             discretized_belief = env.discretize_belief(episode["belief"][step])
-            discretized_belief = discretized_belief.sum(axis=-1)  # Sum over angle dimension
             episode["discrete_belief"].append(discretized_belief)
             latent = episode["latent"][step]
             control_latent = episode["control_latent"][step]
@@ -87,8 +86,8 @@ def visualize_trajectory_step(env, episode, step_idx):
     Visualize a single step showing true and predicted belief distributions side by side
     """
     # Get true and predicted belief grids
-    true_grid = episode['discrete_belief'][step_idx]
-    pred_grid = episode['predicted_belief'][step_idx]
+    true_grid = episode['discrete_belief'][step_idx].sum(axis=-1)
+    pred_grid = episode['predicted_belief'][step_idx].sum(axis=-1)
 
     # Normalize grids to 0-255 range
     true_grid = (((true_grid - true_grid.min()) / (true_grid.max() - true_grid.min())) * 255).astype(np.uint8)
@@ -234,6 +233,7 @@ def main(argv=None):
     parsed, other = embodied.Flags(
         logdir="",
         metric_dir="eval",
+        single_probe=False,
     ).parse_known(argv)
     
     assert parsed.logdir, "Logdir is required"
@@ -263,7 +263,6 @@ def main(argv=None):
     waypoint_kldivs = []
     noisy_scores = []
     noisy_kldivs = []
-    
     for episode_path in episode_paths:
         ckpt_number = int(episode_path.stem.split("_")[-1])
         logger.step.load(ckpt_number)  # Set logger step to checkpoint number
@@ -272,6 +271,8 @@ def main(argv=None):
             logdir / f"episodes_{ckpt_number}.npz", 
             allow_pickle=True
         )
+        control_probe = None
+        probe = None
         for key in ["episodes","noisy_episodes", "waypoint_episodes"]:
             
             episodes = rollouts[key]
@@ -286,16 +287,17 @@ def main(argv=None):
             train_X, train_X_control, train_Y = preprocess_episodes(train_episodes, env)
             val_X, val_X_control, val_Y = preprocess_episodes(val_episodes, env)
             test_X, test_X_control, test_Y = preprocess_episodes(test_episodes, env)
-            probe = train_belief_predictor(
-                train_X, train_Y, 
-                val_X, val_Y,
-                device
-            )
-            control_probe = train_belief_predictor(
-                train_X_control, train_Y,
-                val_X_control, val_Y,
-                device
-            )
+            if probe is None or not parsed.single_probe:
+                probe = train_belief_predictor(
+                    train_X, train_Y, 
+                    val_X, val_Y,
+                    device
+                )
+                control_probe = train_belief_predictor(
+                    train_X_control, train_Y,
+                    val_X_control, val_Y,
+                    device
+                )
             # Calculate episode KL divergences for all sets
             test_pred = probe(torch.FloatTensor(test_X).to(device))
             val_pred = probe(torch.FloatTensor(val_X).to(device))
