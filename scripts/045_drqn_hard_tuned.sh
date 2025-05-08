@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --array=0-2
-#SBATCH --partition mlhiwidlc_gpu-rtx2080
-#SBATCH --job-name 040_drqn_medium_tuned_510
+#SBATCH --array=0-5
+#SBATCH --partition alldlc_gpu-rtx2080
+#SBATCH --job-name 045_drqn_hard_tuned_gradient_steps_high
 #SBATCH --output experiments/slurm/%x-%A-%a.out
 #SBATCH --error experiments/slurm/%x-%A-%a.err
 #SBATCH --mem 16GB
@@ -14,16 +14,18 @@
 echo "Workingdir: $PWD";
 echo "Started at $(date)";
 
- #{'batch_size': 33, 'env_steps': 300000, 'epsilon': 0.21715511625469264, 'hidden_size': 434, 'learning_rate': 0.0005326262097599815, 'num_gradient_steps': 15, 'num_layers': 2, 'train_every': 51}
+
 start=`date +%s`
 export OMP_NUM_THREADS=1
-seeds=(42 1337 13)
+seeds=(42 1337 13 19 94)
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 job_name=$SLURM_JOB_NAME
 logdir="experiments/mordor_hike/${job_name}/${seed}"
-uv run train-drqn --logdir $logdir --configs defaults --seed $seed --env.name "mordor-hike-medium-v0" --train.learning_rate 0.0005326262097599815 --train.batch_size 33  --train.epsilon 0.21715511625469264 --drqn.hidden_size 434 --drqn.num_layers 2 --train.num_gradient_steps 15 --train.train_every 51 --train.target_period 510
+uv run train-drqn --logdir $logdir --configs defaults --seed $seed --env.name "mordor-hike-hard-v0" --train.batch_size 126 --train.epsilon 0.2389 --drqn.hidden_size 160 --train.learning_rate 0.00022516182798426598 --train.num_gradient_steps 100 --train.train_every 35 --train.target_period 280
 uv run rollout-drqn --logdir $logdir
+
 uv run analyze --logdir $logdir
+
 end=`date +%s`
 echo "Finished at $(date)";
 echo "Time taken: $((end-start)) seconds";

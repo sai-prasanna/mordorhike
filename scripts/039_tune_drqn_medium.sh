@@ -17,7 +17,7 @@ echo "Started at $(date)";
 
 start=`date +%s`
 job_name=$SLURM_JOB_NAME
-uv run tune-drqn --env.name "mordor-hike-medium-v0" --neps_root_directory experiments/neps_drqn_medium_new
+uv run tune-drqn --env.name "mordor-hike-medium-v0" --neps_root_directory experiments/neps_drqn_medium_new  --neps_env_steps_max 300000
 end=`date +%s`
 echo "Finished at $(date)";
 echo "Time taken: $((end-start)) seconds";
