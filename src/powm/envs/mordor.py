@@ -144,7 +144,8 @@ class MordorHike(gym.Env):
             position += side_vector * lateral_action[action]
 
         # Apply Gaussian noise to xy position
-        position += self.np_random.normal(0, self.translate_std, position.shape)
+        if self.translate_std > 0:
+            position += self.np_random.normal(0, self.translate_std, position.shape)
 
         # Apply von Mises noise to rotation
         if self.rotate_kappa is not None:
@@ -165,7 +166,8 @@ class MordorHike(gym.Env):
         obs = np.concatenate([position, altitude], axis=-1)
 
         # Apply observation noise
-        obs += self.np_random.normal(0, self.obs_std, obs.shape)
+        if self.obs_std > 0:
+            obs += self.np_random.normal(0, self.obs_std, obs.shape)
 
         # Occlude dimensions
         obs = np.delete(obs, self.occluded_dims, axis=-1)
@@ -302,17 +304,37 @@ class MordorHike(gym.Env):
 
         particle_observations = self.observation(self.particles)
 
+        current_obs_std = self.obs_std
+        if self.obs_std == 0:
+            # Use a very small std if self.obs_std is zero
+            current_obs_std = 1e-6  # A very small standard deviation
+
+        # Calculate likelihood using normal distribution PDF
+        # If current_obs_std is extremely small, this approximates a delta function
         likelihood = scipy.stats.norm.pdf(
             observation,
             loc=particle_observations,
-            scale=self.obs_std,
+            scale=current_obs_std,
         ).prod(axis=-1)
-
-        # Update weights
         weights = likelihood
-        weights /= np.sum(weights)  # Normalize weights
 
-        # Always resample
+        # Normalize weights
+        sum_weights = np.sum(weights)
+        if sum_weights > 1e-9:  # Use a small threshold to avoid division by zero
+            weights /= sum_weights
+        else:
+            # If all weights are zero or sum to near zero,
+            # fall back to uniform weights. This prevents errors in resampling and
+            # indicates potential issues like particle impoverishment or model mismatch.
+            warnings.warn(
+                "All particle weights are zero or sum to near zero. "
+                "Falling back to uniform weights for resampling. "
+                "This may indicate particle impoverishment or model mismatch.",
+                RuntimeWarning
+            )
+            weights = np.ones(self.num_particles, dtype=float) / self.num_particles
+
+        # Resample particles based on the new weights
         indices = self.np_random.choice(
             self.num_particles,
             self.num_particles,
