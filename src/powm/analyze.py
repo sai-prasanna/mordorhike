@@ -83,12 +83,16 @@ def train_belief_predictor(train_X, train_Y, val_X, val_Y, device):
 
 def visualize_trajectory_step(env, episode, step_idx):
     """
-    Visualize a single step showing true and predicted belief distributions side by side
+    Visualize a single step showing map, true belief, and predicted belief side by side
     """
     # Get true and predicted belief grids
     true_grid = episode['discrete_belief'][step_idx].sum(axis=-1)
     pred_grid = episode['predicted_belief'][step_idx].sum(axis=-1)
 
+
+    # Get grid dimensions
+    grid_shape = true_grid.shape
+    
     # Normalize grids to 0-255 range
     true_grid = (((true_grid - true_grid.min()) / (true_grid.max() - true_grid.min())) * 255).astype(np.uint8)
     pred_grid = (((pred_grid - pred_grid.min()) / (pred_grid.max() - pred_grid.min())) * 255).astype(np.uint8)
@@ -96,17 +100,16 @@ def visualize_trajectory_step(env, episode, step_idx):
     true_grid = np.flip(true_grid, axis=1).T
     pred_grid = np.flip(pred_grid, axis=1).T
     
-    render_size = (128, 128)
+    render_size = (512, 512)
     true_grid = cv2.resize(true_grid, render_size)
     pred_grid = cv2.resize(pred_grid, render_size)
     
-    # Create two grayscale backgrounds
+    # Create three grayscale backgrounds
     env.render_size = render_size
-    true_img = env._create_background()
-    true_img = cv2.cvtColor(true_img, cv2.COLOR_BGR2GRAY)
-    true_img = cv2.cvtColor(true_img, cv2.COLOR_GRAY2BGR)
+    map_img = env._create_background()
+    true_img = cv2.cvtColor(cv2.cvtColor(map_img, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
     pred_img = true_img.copy()
-    h, w = true_img.shape[:2]
+    h, w = map_img.shape[:2]
     
     # Convert belief grids to RGB heatmaps (not BGR)
     true_heatmap = cv2.applyColorMap(255 - true_grid, cv2.COLORMAP_JET)  # Invert input to colormap
@@ -119,36 +122,143 @@ def visualize_trajectory_step(env, episode, step_idx):
     true_vis = cv2.addWeighted(true_img, 1-alpha, true_heatmap, alpha, 0)
     pred_vis = cv2.addWeighted(pred_img, 1-alpha, pred_heatmap, alpha, 0)
     
-    # Draw path and current position
+    # Calculate cell size in pixels
+    cell_width = w / grid_shape[0]
+    cell_height = h / grid_shape[1]
+    
+    # Draw grid on map_img with normal opacity
+    # Draw vertical grid lines
+    for i in range(1, grid_shape[0]):
+        x = int(i * cell_width)
+        cv2.line(map_img, (x, 0), (x, h), (255, 255, 255), 1)
+    
+    # Draw horizontal grid lines
+    for i in range(1, grid_shape[1]):
+        y = int(i * cell_height)
+        cv2.line(map_img, (0, y), (w, y), (255, 255, 255), 1)
+    
+    # Draw lighter grid on true_vis and pred_vis
+    grid_alpha = 0.3
+    for i in range(1, grid_shape[0]):
+        x = int(i * cell_width)
+        for img in [true_vis, pred_vis]:
+            overlay = img.copy()
+            cv2.line(overlay, (x, 0), (x, h), (255, 255, 255), 1)
+            cv2.addWeighted(overlay, grid_alpha, img, 1-grid_alpha, 0, img)
+    
+    for i in range(1, grid_shape[1]):
+        y = int(i * cell_height)
+        for img in [true_vis, pred_vis]:
+            overlay = img.copy()
+            cv2.line(overlay, (0, y), (w, y), (255, 255, 255), 1)
+            cv2.addWeighted(overlay, grid_alpha, img, 1-grid_alpha, 0, img)
+    
+    # Draw path and current position on map_img only
     path = episode['state'][:step_idx+1, :2]
     current_state = episode['state'][step_idx]
     path_pixels = env._world_to_pixel(path)
     pos_pixel = env._world_to_pixel(current_state[:2])
     
     # Draw path
-    for img in [true_vis, pred_vis]:
-        cv2.polylines(img, [path_pixels.astype(np.int32)], False, (0, 0, 255), 2)
-        cv2.circle(img, tuple(pos_pixel.astype(np.int32)), 5, (0, 0, 255), -1)
+    cv2.polylines(map_img, [path_pixels.astype(np.int32)], False, (0, 0, 255), 2)
+    cv2.circle(map_img, tuple(pos_pixel.astype(np.int32)), 5, (0, 0, 255), -1)
     
-    # Create colorbar space
-    colorbar_height = 20
+    # Draw direction arrow
+    direction = (
+        int(10 * np.cos(current_state[2])),
+        int(-10 * np.sin(current_state[2])),
+    )
+    cv2.line(
+        map_img, 
+        tuple(pos_pixel.astype(np.int32)), 
+        (pos_pixel[0] + direction[0], pos_pixel[1] + direction[1]), 
+        (0, 0, 255), 
+        2
+    )
     
-    # Create colorbar in RGB
-    colorbar = np.linspace(255, 0, w*2).astype(np.uint8)  # Invert colorbar range
-    colorbar = cv2.applyColorMap(colorbar.reshape(1, -1), cv2.COLORMAP_JET)
+    # Draw particles on the map image
+    if 'belief' in episode and len(episode['belief']) > step_idx:
+        particles = episode['belief'][step_idx]
+        
+        # Create density map for particle positions
+        density_map = np.zeros(map_img.shape[:2], dtype=np.float32)
+        for particle in particles:
+            pos = tuple(map(int, env._world_to_pixel(particle[:2])))
+            if 0 <= pos[0] < map_img.shape[1] and 0 <= pos[1] < map_img.shape[0]:
+                density_map[pos[1], pos[0]] += 1
+        
+        # Normalize density map
+        if np.max(density_map) > 0:
+            density_map = density_map / np.max(density_map)
+        
+        # Draw particles with colors based on density
+        scale_factor = 2
+        for particle in particles:
+            pos = tuple(map(int, env._world_to_pixel(particle[:2])))
+            if 0 <= pos[0] < map_img.shape[1] and 0 <= pos[1] < map_img.shape[0]:
+                # Set alpha based on local density
+                alpha = min(1.0, density_map[pos[1], pos[0]] * 0.8 + 0.2)
+                
+                # Draw circle and direction
+                color = (0, 165, 255)  # Orange in RGB
+                overlay = map_img.copy()
+                cv2.circle(overlay, pos, 2, color, scale_factor)
+                
+                direction = (
+                    int(4 * scale_factor * np.cos(particle[2])),
+                    int(-4 * scale_factor * np.sin(particle[2])),
+                )
+                cv2.line(
+                    overlay,
+                    pos,
+                    (pos[0] + direction[0], pos[1] + direction[1]),
+                    color,
+                    scale_factor,
+                )
+                
+                # Apply alpha blending
+                cv2.addWeighted(overlay, alpha, map_img, 1 - alpha, 0, map_img)
+    
+    # Create vertical colorbar on the right
+    colorbar_width = 20
+    label_height = 30  # Height for labels above images
+    combined_height = h + label_height
+    combined_width = w * 3 + colorbar_width
+    # Create vertical colorbar in RGB (from bottom to top: low to high)
+    colorbar = np.linspace(0, 255, h).astype(np.uint8)  # Low to high
+    colorbar = cv2.applyColorMap(colorbar.reshape(-1, 1), cv2.COLORMAP_JET)
     colorbar = cv2.cvtColor(colorbar, cv2.COLOR_BGR2RGB)
-    colorbar = cv2.resize(colorbar, (w*2, colorbar_height))
+    colorbar = cv2.resize(colorbar, (colorbar_width, h))
     
     # Add min/max labels to colorbar
     font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(colorbar, "0.0", (5, 15), font, 0.5, (255, 255, 255), 1)
-    cv2.putText(colorbar, "1.0", (w*2-30, 15), font, 0.5, (255, 255, 255), 1)
+    font_scale = 0.3
+    # Rotate text for vertical labels
+    colorbar_with_text = colorbar.copy()
+    cv2.putText(colorbar_with_text, "0.0", (2, h-5), font, font_scale, (255, 255, 255), 1)
+    cv2.putText(colorbar_with_text, "1.0", (2, 15), font, font_scale, (255, 255, 255), 1)
     
-    # Stack everything together
-    combined = np.vstack([
-        np.hstack([true_vis, pred_vis]),
-        colorbar
-    ])
+    # Create the combined image with vertical colorbar and label area
+    combined = np.zeros((combined_height, combined_width, 3), dtype=np.uint8) + 255  # White background
+    
+    # Add images below the label area
+    combined[label_height:combined_height, :w] = map_img
+    combined[label_height:combined_height, w:w*2] = true_vis
+    combined[label_height:combined_height, w*2:w*3] = pred_vis
+    combined[label_height:combined_height, w*3:] = colorbar_with_text
+    
+    # Add labels in the label area (centered above each image)
+    font_scale = 0.7
+    thickness = 2
+    
+    # Calculate text sizes to center them
+    labels = ["Environment", "True Belief", "Predicted Belief"]
+    for i, label in enumerate(labels):
+        text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+        x = w * i + (w - text_size[0]) // 2
+        y = label_height - 10  # Position from top
+        cv2.putText(combined, label, (x, y), font, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)  # Black text
+    
     return combined
 def calculate_episodic_kldivs(episodes, pred, Y, device, criterion):
     """Calculate KL divergence for each episode in the dataset.
@@ -344,6 +454,13 @@ def main(argv=None):
                 for step_idx in range(len(episode['state'])):
                     frame = visualize_trajectory_step(env, episode, step_idx=step_idx)
                     frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    
+                    # Save individual frames as PNG files
+                    frame_path = Path(logdir) / parsed.metric_dir / key / f"episode_{i}" 
+                    frame_path.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(frame_path / f"step_{step_idx:04d}.png"), 
+                                frame)
+                    
                 frames = np.array(frames)
                 logger.add({
                     f"eval_video/{i}": frames
