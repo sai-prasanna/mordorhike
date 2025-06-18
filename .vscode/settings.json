@@ -12,5 +12,6 @@
         }
     },
     "black-formatter.args": ["--force-exclude", "third_party/**"],
-    "isort.args": ["--profile", "black", "--skip", "third_party/**"]
+    "isort.args": ["--profile", "black", "--skip", "third_party/**"],
+    "julia.executablePath": "~/.juliaup/bin/julia +1.6"
 }

@@ -42,6 +42,7 @@ class MordorHike(gym.Env):
         effective_particle_threshold=0.5,
         render_size=(128, 128),
         lateral_action="strafe",
+        terrain_seed=None,
     ):
         self.dimensions = 2
         self.occluded_dims = list(occlude_dims)
@@ -70,12 +71,13 @@ class MordorHike(gym.Env):
         # action mode
         self.lateral_action = lateral_action
 
-        self._setup_landscape()
 
         self.observation_size = 1  # x, y, altitude
         self.action_size = (
             4  # north, south, east, west or forward, backward, turn left, turn right
         )
+        self.terrain_seed = terrain_seed
+        self._setup_landscape()
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -105,9 +107,59 @@ class MordorHike(gym.Env):
         self.uniform_start_lower_bound = np.array([-1.0, -1.0])
         self.uniform_start_upper_bound = np.array([0.0, 0.0])
         self.goal_position = np.full(self.dimensions, 0.8)
-        self.mvn_1 = mvn(mean=[0.0, 0.0], cov=[[0.005, 0.0], [0.0, 1.0]])
-        self.mvn_2 = mvn(mean=[0.0, -0.8], cov=[[1.0, 0.0], [0.0, 0.01]])
-        self.mvn_3 = mvn(mean=[0.0, 0.8], cov=[[1.0, 0.0], [0.0, 0.01]])
+
+        # Base mountain parameters
+        base_mountain_centers = [
+            [0.0, 0.0],   # Center mountain
+            [0.0, -0.8],  # Bottom mountain
+            [0.0, 0.8],   # Top mountain
+        ]
+        base_mountain_covs = [
+            [[0.005, 0.0], [0.0, 1.0]],   # Horizontal ridge
+            [[1.0, 0.0], [0.0, 0.01]],    # Vertical ridge at bottom
+            [[1.0, 0.0], [0.0, 0.01]],    # Vertical ridge at top
+        ]
+
+        # Use terrain_seed if provided
+        if self.terrain_seed is not None:
+            # Create a separate random generator for terrain to ensure reproducibility
+            terrain_rng = np.random.RandomState(self.terrain_seed)
+            
+            # Apply random translations within bounds (-0.5, 0.5) for each mountain center
+            translated_centers = []
+            for center in base_mountain_centers:
+                # Random translation, but make sure mountains stay mostly within the map
+                translation = terrain_rng.uniform(-0.4, 0.4, size=2)
+                translated_centers.append(np.array(center) + translation)
+            
+            # Apply random rotations to the covariance matrices
+            rotated_covs = []
+            for cov in base_mountain_covs:
+                # Generate a random rotation angle
+                theta = terrain_rng.uniform(0, 2*np.pi)
+                # Rotation matrix
+                rot_matrix = np.array([
+                    [np.cos(theta), -np.sin(theta)],
+                    [np.sin(theta), np.cos(theta)]
+                ])
+                # Apply rotation to covariance: R * Cov * R.T
+                rotated_cov = rot_matrix @ np.array(cov) @ rot_matrix.T
+                rotated_covs.append(rotated_cov)
+            
+            # Use transformed mountains
+            self.mountain_centers = translated_centers
+            self.mountain_covs = rotated_covs
+        else:
+            # Use default mountains
+            self.mountain_centers = base_mountain_centers
+            self.mountain_covs = base_mountain_covs
+            
+        # Create multivariate normal distributions with the appropriate centers and covariance matrices
+        self.mountains = [
+            mvn(mean=center, cov=cov)
+            for center, cov in zip(self.mountain_centers, self.mountain_covs)
+        ]
+        
         self.slope = np.array([0.2, 0.2])
 
     def dynamics(self, state, action):
@@ -181,11 +233,7 @@ class MordorHike(gym.Env):
         position_2d = position[..., :2]
 
         mountains = np.stack(
-            [
-                self.mvn_1.pdf(position_2d),
-                self.mvn_2.pdf(position_2d),
-                self.mvn_3.pdf(position_2d),
-            ]
+            [mountain.pdf(position_2d) for mountain in self.mountains]
         )
 
         altitude = np.max(mountains, axis=0)
@@ -264,6 +312,7 @@ class MordorHike(gym.Env):
         if self.estimate_belief:
             self._update_belief(action, observation)
             info["belief"] = self._get_belief()
+            info["particle_entropy"] = self._compute_belief_entropy()
         self.step_count += 1
         self.path.append(self.state[:2].copy())
 
@@ -288,6 +337,7 @@ class MordorHike(gym.Env):
             self._init_belief()
             self._update_belief(None, observation)
             info["belief"] = self._get_belief()
+            info["particle_entropy"] = self._compute_belief_entropy()
         return observation, info
 
     def _terminal(self, states):
@@ -320,7 +370,7 @@ class MordorHike(gym.Env):
 
         # Normalize weights
         sum_weights = np.sum(weights)
-        if sum_weights > 1e-9:  # Use a small threshold to avoid division by zero
+        if (sum_weights > 1e-9):  # Use a small threshold to avoid division by zero
             weights /= sum_weights
         else:
             # If all weights are zero or sum to near zero,
@@ -345,6 +395,57 @@ class MordorHike(gym.Env):
 
     def _get_belief(self):
         return self.particles.copy()
+        
+    def _compute_belief_entropy(self):
+        """Compute discretized entropy of the belief state.
+        Returns normalized entropy values for position and orientation."""
+        if not hasattr(self, "particles") or len(self.particles) == 0:
+            return np.zeros(2)
+
+        grid_x_y_size = 0.1
+        n_bins_angle = 4  # Discretize theta into 4 bins
+
+        n_bins_x = int(
+            np.ceil((self.map_upper_bound[0] - self.map_lower_bound[0]) / grid_x_y_size)
+        )
+        n_bins_y = int(
+            np.ceil((self.map_upper_bound[1] - self.map_lower_bound[1]) / grid_x_y_size)
+        )
+
+        # Get histogram
+        hist, _ = np.histogramdd(
+            self.particles,
+            bins=[n_bins_x, n_bins_y, n_bins_angle],
+            range=[
+                [self.map_lower_bound[0], self.map_upper_bound[0]],
+                [self.map_lower_bound[1], self.map_upper_bound[1]],
+                [0, 2 * np.pi],
+            ],
+        )
+
+        if hist.sum() == 0:
+            return np.zeros(2)
+
+        prob_dist = hist / hist.sum()
+
+        # Marginal probabilities
+        pos_prob = prob_dist.sum(axis=2)
+        angle_prob = prob_dist.sum(axis=(0, 1))
+
+        # Entropies
+        pos_entropy = scipy.stats.entropy(pos_prob.flatten())
+        angle_entropy = scipy.stats.entropy(angle_prob.flatten())
+
+        # Normalized entropies
+        max_pos_entropy = np.log(n_bins_x * n_bins_y)
+        max_angle_entropy = np.log(n_bins_angle)
+
+        norm_pos_entropy = pos_entropy / max_pos_entropy if max_pos_entropy > 0 else 0.0
+        norm_angle_entropy = (
+            angle_entropy / max_angle_entropy if max_angle_entropy > 0 else 0.0
+        )
+
+        return np.array([norm_pos_entropy, norm_angle_entropy])
 
     def render(self):
         if self.render_mode is None:
@@ -387,16 +488,16 @@ class MordorHike(gym.Env):
                 pos = tuple(map(int, self._world_to_pixel(particle[:2])))
                 if 0 <= pos[0] < img.shape[1] and 0 <= pos[1] < img.shape[0]:
                     # Calculate angle difference with true state
-                    #angle_diff = abs((particle[2] - self.state[2] + np.pi) % (2*np.pi) - np.pi)
-                    #angle_match = angle_diff < np.pi/6  # Within 30 degrees
+                    angle_diff = abs((particle[2] - self.state[2] + np.pi) % (2*np.pi) - np.pi)
+                    angle_match = angle_diff < np.pi/6  # Within 30 degrees
                     
                     # Set alpha based on local density
                     alpha = min(1.0, density_map[pos[1], pos[0]] * 0.8 + 0.2)
                     
                     # Draw circle and direction with different colors based on angle match
-                    color = (0, 165, 255)
+                    color = (0, 255, 0) if angle_match else (0, 165, 255)  # Green if angle matches, orange if not
                     overlay = img.copy()
-                    cv2.circle(overlay, pos, int(2), color, scale_factor * 2)
+                    cv2.circle(overlay, pos, int(2), color, 1)
                     
                     direction = (
                         int(4 * scale_factor * np.cos(particle[2])),
@@ -407,20 +508,20 @@ class MordorHike(gym.Env):
                         pos,
                         (pos[0] + direction[0], pos[1] + direction[1]),
                         color,
-                        scale_factor,
+                        1,
                     )
                     
                     # Apply alpha blending
                     cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
         # Draw actual position and direction
         pos = tuple(map(int, self._world_to_pixel(self.state[:2])))
-        cv2.circle(img, pos, int(4 * scale_factor), (0, 0, 255), -1)
+        cv2.circle(img, pos, int(5 * scale_factor), (0, 0, 255), -1)
         direction = (
             int(7 * scale_factor * np.cos(self.state[2])),
             int(-7 * scale_factor * np.sin(self.state[2])),
         )
         cv2.line(
-            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), scale_factor * 2
+            img, pos, (pos[0] + direction[0], pos[1] + direction[1]), (0, 0, 255), 2
         )
 
         if self.render_mode == "rgb_array":
@@ -436,9 +537,6 @@ class MordorHike(gym.Env):
         X, Y = np.meshgrid(x, y)
         positions = np.stack([X, Y], axis=-1)
         Z = self._altitude(positions.reshape(-1, 2)).reshape(height, width)
-        # Set terminal region to zero altitude
-        terminal_mask = self._terminal(positions.reshape(-1, 2)).reshape(height, width)
-        Z[terminal_mask] = 0
 
         # Normalize Z to 0-255 range
         Z_norm = ((Z - Z.min()) / (Z.max() - Z.min()) * 255).astype(np.uint8)
@@ -475,113 +573,6 @@ class MordorHike(gym.Env):
             * (self.render_size[0] - 1)
         ).astype(np.int32)
         return np.stack([x, y], axis=-1)
-
-    def cem_plan(
-        self,
-        state,
-        n_iterations=5,
-        n_samples=1000,
-        n_elite=100,
-        horizon=50,
-        discount=0.99,
-        update_smooth_factor=0.1,
-    ):
-        # Initialize probabilities for each action (4 actions)
-        probs = np.ones((horizon, 4)) / 4
-        state = np.tile(state, (n_samples, 1))
-
-        for _ in range(n_iterations):
-            # Sample actions from multinomial distribution for each time step
-            actions = np.array(
-                [
-                    self.np_random.choice(4, size=n_samples, p=probs[t])
-                    for t in range(horizon)
-                ]
-            ).T
-
-            actions = actions[..., np.newaxis]
-            returns = self._rollout(state, actions, discount)
-
-            # Select elite samples
-            elite_idx = np.argsort(returns)[-n_elite:]
-            elite_actions = actions[elite_idx]
-
-            # Update probabilities based on elite actions
-            new_probs = np.eye(4)[elite_actions].squeeze().mean(axis=0)
-            probs = (
-                update_smooth_factor * new_probs + (1 - update_smooth_factor) * probs
-            )
-
-        # Choose the most probable action for the first step
-        return np.argmax(probs[0])
-
-    def _rollout(self, state, actions, discount):
-        rewards = np.zeros((len(state), actions.shape[1]))
-
-        for t in range(actions.shape[1]):
-            state = self.dynamics(state, actions[:, t])
-            rewards[:, t] = self._altitude(state[:, :2])
-            terminated = self._terminal(state)
-            rewards[terminated, t:] = 0
-            if np.all(terminated):
-                break
-
-        discount_factors = discount ** np.arange(actions.shape[1])
-        returns = (rewards * discount_factors).sum(axis=1)
-        return returns
-
-    def reinforce_plan(
-        self,
-        state,
-        n_iterations=1000,
-        horizon=50,
-        learning_rate=0.01,
-        discount=0.99,
-        batch_size=32,
-    ):
-        # Initialize action probabilities
-        log_probs = np.ones((horizon, 4)) / 4
-
-        for _ in range(n_iterations):
-            # Sample actions
-            actions = np.array(
-                [
-                    self.np_random.choice(
-                        4, p=np.exp(log_probs[t]) / np.sum(np.exp(log_probs[t]))
-                    )
-                    for t in range(horizon)
-                ]
-            )
-
-            # Perform rollouts
-            returns = np.zeros((batch_size, horizon))
-            for b in range(batch_size):
-                current_state = state.copy()
-                for t in range(horizon):
-                    current_state = self.dynamics(
-                        current_state.reshape(1, -1), np.array([actions[t]])
-                    ).reshape(-1)
-                    reward = (
-                        0
-                        if self._terminal(current_state.reshape(1, -1))[0]
-                        else self._altitude(current_state[:2].reshape(1, -1))[0]
-                    )
-                    returns[b, t:] += reward * (discount ** np.arange(horizon - t))
-                    if self._terminal(current_state.reshape(1, -1))[0]:
-                        break
-
-            # Compute gradient and update log_probs
-            for t in range(horizon):
-                action_mask = np.eye(4)[actions[t]]
-                baseline = np.mean(returns[:, t])
-                advantage = returns[:, t] - baseline
-                grad = np.mean(
-                    action_mask[np.newaxis, :] * advantage[:, np.newaxis], axis=0
-                )
-                log_probs[t] += learning_rate * grad
-
-        # Choose the most probable action for the first step
-        return np.argmax(log_probs[0])
         
     def discretize_belief(self, belief, grid_x_y_size=0.1, grid_angle_size=np.pi/2):
         n_bins_x = np.ceil((self.map_upper_bound[0] - self.map_lower_bound[0]) / grid_x_y_size).astype(int)
@@ -725,12 +716,49 @@ class MordorHike(gym.Env):
         
         return np.array(waypoints)
 
+def evaluate_policy(env, policy_type="greedy", n_episodes=10):
+    episode_entropies = []
+    for _ in range(n_episodes):
+        obs, info = env.reset()
+        done = False
+        step_entropy_sum = np.zeros(2)  # [position_entropy, angle_entropy]
+        total_steps = 0
+        while not done:
+            step_entropy_sum += env._compute_belief_entropy()
+            total_steps += 1
+            if policy_type == "random":
+                action = env.action_space.sample()
+            elif policy_type == "greedy":
+                action = env.get_waypoint_action([env.goal_position])[0]
+            else:
+                raise ValueError(f"Unknown policy type {policy_type}")
+
+            obs, rew, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+        
+        episode_entropies.append(step_entropy_sum / total_steps)
+    
+    # Average over episodes and return both position and angle entropies
+    return np.mean(episode_entropies, axis=0)
+
 def main():
     """
     Allows to play with the MordorHike environment using keyboard controls.
     """
+    
+    for difficulty in ["easy", "medium", "hard"]:
+        for terrain_seed in [None, 42]:
+            env = getattr(MordorHike, difficulty)(
+                estimate_belief=True, terrain_seed=terrain_seed
+            )
+            print(f"\nEvaluating {difficulty} policy with terrain seed {terrain_seed}")            
+            print("Random policy entropy", evaluate_policy(env, policy_type="random", n_episodes=100))
+            print("Greedy policy entropy", evaluate_policy(env, policy_type="greedy", n_episodes=100))
+            
+            env.close()
+    
     env = MordorHike.hard(
-        render_mode="human", estimate_belief=True, num_particles=1000, render_size=(600, 600)
+        render_mode="human", estimate_belief=True, terrain_seed=42
     )
     obs, _ = env.reset(seed=2)
 
@@ -770,7 +798,7 @@ def main():
                     update_smooth_factor=0.1,
                 )
             elif key == ord("v"):
-                action, visited = env.get_waypoint_action(waypoints, visited)
+                action, visited = env.get_waypoint_action(waypoints, env.state, visited)
                 if action is None:
                     print("All waypoints visited or current waypoint reached")
                     action = 0
@@ -821,3 +849,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
