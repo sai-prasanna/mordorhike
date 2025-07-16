@@ -9,6 +9,7 @@ dependencies = [
     "dreamerv3",
     "gymnasium>=0.29",
     "ipykernel>=6.29.5",
+    "jax[cuda12]>=0.5.3",
     "matplotlib>=3.9.2",
     "neural-pipeline-search>=0.12.2",
     "opencv-python>=4.10.0.84",

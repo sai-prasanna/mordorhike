@@ -3,6 +3,7 @@ import random
 from pathlib import Path
 
 import cv2
+import imageio
 import numpy as np
 import torch
 import torch.nn as nn
@@ -455,15 +456,14 @@ def main(argv=None):
                     frame = visualize_trajectory_step(env, episode, step_idx=step_idx)
                     frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                     
-                    # Save individual frames as PNG files
-                    frame_path = Path(logdir) / parsed.metric_dir / key / f"episode_{i}" 
-                    frame_path.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(str(frame_path / f"step_{step_idx:04d}.png"), 
-                                frame)
-                    
-                frames = np.array(frames)
+                # Save as GIF
+                gif_path = Path(logdir) / parsed.metric_dir / key / f"episode_{i}"
+                gif_path.mkdir(parents=True, exist_ok=True)
+                gif_file = gif_path / "trajectory.gif"
+                imageio.mimsave(str(gif_file), frames, duration=0.1)
+                
                 logger.add({
-                    f"eval_video/{i}": frames
+                    f"eval_gif/{i}": str(gif_file)
                 }, prefix=key)
             logger.write()
 

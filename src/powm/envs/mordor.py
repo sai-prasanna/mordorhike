@@ -15,15 +15,31 @@ class MordorHike(gym.Env):
 
     @classmethod
     def easy(cls, **kwargs):
-        return cls(occlude_dims=(0, 1), start_distribution="fixed", **kwargs)
+        default_kwargs = {
+            "occlude_dims": (0, 1),
+            "start_distribution": "fixed",
+        }
+        default_kwargs.update(kwargs)
+        return cls(**default_kwargs)
 
     @classmethod
     def medium(cls, **kwargs):
-        return cls(occlude_dims=(0, 1), start_distribution="rotation", **kwargs)
+        default_kwargs = {
+            "occlude_dims": (0, 1),
+            "start_distribution": "rotation",
+        }
+        default_kwargs.update(kwargs)
+        return cls(**default_kwargs)
 
     @classmethod
     def hard(cls, **kwargs):
-        return cls(occlude_dims=(0, 1), start_distribution="rotation", lateral_action="rotate", **kwargs)
+        default_kwargs = {
+            "occlude_dims": (0, 1),
+            "start_distribution": "rotation",
+            "lateral_action": "rotate",
+        }
+        default_kwargs.update(kwargs)
+        return cls(**default_kwargs)
 
 
     def __init__(
@@ -43,6 +59,7 @@ class MordorHike(gym.Env):
         render_size=(128, 128),
         lateral_action="strafe",
         terrain_seed=None,
+        terminal_reward=0.,
     ):
         self.dimensions = 2
         self.occluded_dims = list(occlude_dims)
@@ -72,11 +89,12 @@ class MordorHike(gym.Env):
         self.lateral_action = lateral_action
 
 
-        self.observation_size = 1  # x, y, altitude
+        self.observation_size = 3 - len(occlude_dims)  # x, y, altitude
         self.action_size = (
             4  # north, south, east, west or forward, backward, turn left, turn right
         )
         self.terrain_seed = terrain_seed
+        self.terminal_reward = terminal_reward
         self._setup_landscape()
 
         self.observation_space = spaces.Box(
@@ -303,7 +321,7 @@ class MordorHike(gym.Env):
         ).reshape(-1)
         observation = self.observation(self.state.reshape(1, -1)).reshape(-1)
         terminated = self._terminal(self.state.reshape(1, -1))[0]
-        reward = 0 if terminated else self._altitude(self.state[:2].reshape(1, -1))[0]
+        reward = self.terminal_reward if terminated else self._altitude(self.state[:2].reshape(1, -1))[0]
 
         truncated = self.step_count >= self.horizon
         info = {
@@ -398,9 +416,9 @@ class MordorHike(gym.Env):
         
     def _compute_belief_entropy(self):
         """Compute discretized entropy of the belief state.
-        Returns normalized entropy values for position and orientation."""
+        Returns normalized entropy values for position, orientation, and total joint entropy."""
         if not hasattr(self, "particles") or len(self.particles) == 0:
-            return np.zeros(2)
+            return np.zeros(3)
 
         grid_x_y_size = 0.1
         n_bins_angle = 4  # Discretize theta into 4 bins
@@ -424,7 +442,7 @@ class MordorHike(gym.Env):
         )
 
         if hist.sum() == 0:
-            return np.zeros(2)
+            return np.zeros(3)
 
         prob_dist = hist / hist.sum()
 
@@ -435,17 +453,18 @@ class MordorHike(gym.Env):
         # Entropies
         pos_entropy = scipy.stats.entropy(pos_prob.flatten())
         angle_entropy = scipy.stats.entropy(angle_prob.flatten())
+        total_entropy = scipy.stats.entropy(prob_dist.flatten())
 
         # Normalized entropies
         max_pos_entropy = np.log(n_bins_x * n_bins_y)
         max_angle_entropy = np.log(n_bins_angle)
+        max_total_entropy = np.log(n_bins_x * n_bins_y * n_bins_angle)
 
         norm_pos_entropy = pos_entropy / max_pos_entropy if max_pos_entropy > 0 else 0.0
-        norm_angle_entropy = (
-            angle_entropy / max_angle_entropy if max_angle_entropy > 0 else 0.0
-        )
+        norm_angle_entropy = angle_entropy / max_angle_entropy if max_angle_entropy > 0 else 0.0
+        norm_total_entropy = total_entropy / max_total_entropy if max_total_entropy > 0 else 0.0
 
-        return np.array([norm_pos_entropy, norm_angle_entropy])
+        return np.array([norm_pos_entropy, norm_angle_entropy, norm_total_entropy])
 
     def render(self):
         if self.render_mode is None:
@@ -721,7 +740,7 @@ def evaluate_policy(env, policy_type="greedy", n_episodes=10):
     for _ in range(n_episodes):
         obs, info = env.reset()
         done = False
-        step_entropy_sum = np.zeros(2)  # [position_entropy, angle_entropy]
+        step_entropy_sum = np.zeros(3)  # [position_entropy, angle_entropy, total_entropy]
         total_steps = 0
         while not done:
             step_entropy_sum += env._compute_belief_entropy()
@@ -849,4 +868,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
