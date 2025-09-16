@@ -2,7 +2,6 @@
     "python.analysis.extraPaths": [
         "third_party/dreamerv3",
         "third_party/recall2imagine",
-        "third_party/STORM",
     ],
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter",

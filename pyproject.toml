@@ -17,7 +17,6 @@ dependencies = [
     "rliable>=1.2.0",
     "scikit-learn>=1.6.0",
     "seaborn>=0.13.2",
-    "storm-wm",
     "tensorboardx>=2.6.2.2",
     "tensorflow-probability[tf]>=0.24.0",
     "torch>=2.4.1",
@@ -27,7 +26,6 @@ dependencies = [
 [tool.uv.sources]
 dreamerv3 = { path = "third_party/dreamerv3", editable = true }
 recall2imagine = { path = "third_party/recall2imagine", editable = true }
-storm-wm = { path = "third_party/STORM", editable = true }
 neural-pipeline-search = { git = "https://github.com/automl/neps.git" }
 
 [project.scripts]
@@ -38,8 +36,6 @@ rollout-dreamer = "powm.algorithms.rollout_dreamer:main"
 train-r2i = "powm.algorithms.train_r2i:main"
 rollout-r2i = "powm.algorithms.rollout_r2i:main"
 tune-r2i = "powm.algorithms.tune_r2i:main"
-train-storm = "powm.algorithms.train_storm:main"
-rollout-storm = "powm.algorithms.rollout_storm:main"
 train-drqn = "powm.algorithms.train_drqn:main"
 rollout-drqn = "powm.algorithms.rollout_drqn:main"
 analyze = "powm.analyze:main"
